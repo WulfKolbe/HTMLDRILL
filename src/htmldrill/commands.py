@@ -53,6 +53,10 @@ LLMTEXT_BUILT = "LLMTEXT_BUILT"
 # L4 (split recovery — lazy-load / virtualization)
 SPLITS_KNOWN = "SPLITS_KNOWN"
 MATERIALIZED = "MATERIALIZED"
+# M5 (crawl / retrieve / chatlog)
+CRAWLED = "CRAWLED"
+RETRIEVED = "RETRIEVED"
+CHATLOGGED = "CHATLOGGED"
 
 
 @dataclass
@@ -67,6 +71,16 @@ class Ctx:
     timeout: float = F.DEFAULT_TIMEOUT
     window: str = "1280,900"          # render viewport
     render_delta: bool = False        # materialize: headless virtual-time diff mode
+    # M5 (crawl / retrieve / chatlog)
+    query: Optional[str] = None       # retrieve: the question (space-joined words)
+    k: int = 8                        # retrieve: top-k units
+    ask: Optional[str] = None         # chatlog: a Q to append (with --answer)
+    answer: Optional[str] = None      # chatlog: the answer text for --ask
+    units: Optional[str] = None       # chatlog: comma-separated grounding unit ids
+    model_name: str = ""              # chatlog: the LLM name recorded with the turn
+    depth: int = 1                    # crawl: max link depth from the start url
+    max_pages: int = 20               # crawl: hard cap on pages visited
+    same_origin: bool = True          # crawl: restrict to same-origin internal links
 
 
 # -- id resolution -----------------------------------------------------------
@@ -1039,6 +1053,343 @@ def _dom_block_delta(plain: str, materialized: str) -> list[str]:
     return out
 
 
+# -- M5 crawl (bounded same-origin frontier) ---------------------------------
+#
+# A web document is rarely one page — `crawl` walks the bounded same-origin
+# frontier from a start URL, fetching + modelling each page (it reuses cmd_fetch
+# and cmd_model verbatim, so each page lands as a normal target with its own
+# sidecar/blobs/model). It follows only INTERNAL links (the `extract_links`
+# internal bucket: same host for http(s), same directory subtree for file://).
+# NETWORK for http(s) — like `fetch`/`render`, it is NEVER listed in any
+# `requires:` so --ensure can't trigger it; offline for file://. Bounded by
+# --max, cycle-safe via a visited set, robots.txt-respecting for http.
+
+def _same_origin(start_url: str, candidate: str) -> bool:
+    """Same-origin test used to bound the frontier.
+
+    For http(s): identical (scheme, host, port). For file://: the candidate's
+    path lives under the START url's *directory subtree* (so the crawl never
+    escapes the site folder). `extract_links` already buckets these as internal,
+    but we re-check here so --same-origin is a real, independent guard."""
+    from urllib.parse import urlparse
+    a, b = urlparse(start_url), urlparse(candidate)
+    if a.scheme in ("http", "https"):
+        return (a.scheme, a.netloc) == (b.scheme, b.netloc)
+    if a.scheme == "file":
+        base_dir = a.path.rsplit("/", 1)[0] + "/"
+        return b.scheme == "file" and b.path.startswith(base_dir)
+    return False
+
+
+def _robots_ok(url: str, ua: str) -> bool:
+    """robots.txt politeness for http(s): True if the UA may fetch `url`. If the
+    robots fetch fails (network error / no robots), proceed politely (True) — we
+    never block the crawl on an unreachable robots file. Offline file:// always
+    allowed."""
+    from urllib.parse import urlparse, urlunparse
+    from urllib.robotparser import RobotFileParser
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        return True
+    robots_url = urlunparse((p.scheme, p.netloc, "/robots.txt", "", "", ""))
+    rp = RobotFileParser()
+    try:
+        rp.set_url(robots_url)
+        rp.read()
+    except Exception:  # noqa: BLE001 — unreachable/garbled robots ⇒ proceed politely
+        return True
+    try:
+        return rp.can_fetch(ua, url)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def cmd_crawl(ctx: Ctx) -> str:
+    """Bounded same-origin crawl from a start URL (M5).
+
+    Breadth-first to --depth (default 1), capped at --max pages (default 20),
+    restricted to same-origin internal links when --same-origin (default on).
+    Each page is fetched + modelled (reusing `fetch`/`model`), so every visited
+    page becomes a normal htmldrill target. NETWORK for http(s) (robots.txt
+    respected; an unreachable robots file ⇒ proceed politely); OFFLINE for
+    file:// (same-origin == same directory subtree). Idempotent + cycle-safe:
+    a visited set dedups, and the per-target fetch/model are themselves cached.
+
+    Records a crawl summary on the START target's sidecar (fact CRAWLED + a
+    `crawl.json` evidence blob: pages visited in order, links followed, per-page
+    object ids)."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill crawl <url> [--depth N] [--max P]")
+    from urllib.parse import urlparse
+
+    ua = ctx.ua or F.DEFAULT_UA
+    start_norm = F.normalize_url(ctx.url)
+    start_is_http = urlparse(start_norm).scheme in ("http", "https")
+
+    # The start target's sidecar carries the crawl summary.
+    start_sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    if start_sc.has(CRAWLED) and start_sc.has_blob("crawl.json") and not ctx.force:
+        summary = json.loads(start_sc.read_blob("crawl.json") or "{}")
+        return _crawl_report(start_sc, summary, cached=True)
+
+    t0 = time.perf_counter()
+    # frontier holds (url, depth); we resolve everything to absolute URLs so the
+    # visited set and same-origin checks are unambiguous. The start origin is the
+    # first fetched page's final_url (its own file:// uri or canonical http url).
+    visited: set[str] = set()
+    pages: list[dict] = []          # per-page record: {url, id, depth, objects, links}
+    followed: list[str] = []        # the edges actually traversed (for the summary)
+    skipped_robots: list[str] = []
+    origin_anchor: Optional[str] = None
+
+    # BFS queue keyed by the ORIGINAL url string; we map each to a target id.
+    queue: list[tuple[str, int]] = [(ctx.url, 0)]
+    while queue and len(pages) < ctx.max_pages:
+        url, depth = queue.pop(0)
+        # robots gate (http only); file:// always allowed.
+        if start_is_http and not _robots_ok(url, ua):
+            skipped_robots.append(url)
+            continue
+        page_ctx = Ctx(url=url, work=ctx.work, force=ctx.force, ua=ctx.ua,
+                       timeout=ctx.timeout)
+        # fetch + model (both idempotent/cached). Reuse the real handlers.
+        cmd_fetch(page_ctx)
+        page_sc = Sidecar(F.local_id_for(url), work=ctx.work)
+        final_url = page_sc.get_evidence("final_url") or start_norm
+        if origin_anchor is None:
+            origin_anchor = final_url
+        if final_url in visited:
+            continue
+        visited.add(final_url)
+        try:
+            cmd_model(page_ctx)
+        except Exception:  # noqa: BLE001 — a model build failure must not abort the crawl
+            pass
+        obj_ids = _crawl_object_ids(page_sc)
+
+        html = page_sc.read_blob("raw.html") or ""
+        c = H.collect(html)
+        links = H.extract_links(c, base_url=final_url)
+        internal = [u for u, _ in links["internal"]]
+        ext_count = len(links["external"])
+
+        pages.append({
+            "url": url, "final_url": final_url, "id": page_sc.local_id,
+            "depth": depth, "objects": len(obj_ids), "object_ids": obj_ids,
+            "internal_links": len(internal), "external_links": ext_count,
+        })
+
+        # enqueue same-origin internal children one level deeper, until depth cap.
+        if depth < ctx.depth:
+            for target in internal:
+                if ctx.same_origin and not _same_origin(origin_anchor, target):
+                    continue
+                if target in visited:
+                    continue
+                if any(target == q[0] for q in queue):
+                    continue
+                if len(pages) + len(queue) >= ctx.max_pages:
+                    break
+                followed.append(f"{page_sc.local_id} → {target}")
+                queue.append((target, depth + 1))
+
+    cost_ms = (time.perf_counter() - t0) * 1000
+    summary = {
+        "start": ctx.url,
+        "origin": origin_anchor,
+        "depth": ctx.depth,
+        "max_pages": ctx.max_pages,
+        "same_origin": ctx.same_origin,
+        "pages_visited": len(pages),
+        "links_followed": len(followed),
+        "robots_skipped": len(skipped_robots),
+        "pages": pages,
+        "followed": followed,
+    }
+    start_sc.write_blob("crawl.json", json.dumps(summary, indent=2, ensure_ascii=False))
+    start_sc.set_layer("crawl", {"path": "crawl.json", "format": "application/json"})
+    start_sc.set_evidence("crawl_pages", len(pages))
+    start_sc.set_evidence("crawl_links_followed", len(followed))
+    start_sc.add_fact(CRAWLED)
+    start_sc.log_transition("crawl", _prev(start_sc, CRAWLED), CRAWLED, cost_ms,
+                            f"{len(pages)} pages depth={ctx.depth} max={ctx.max_pages} "
+                            f"followed={len(followed)}")
+    start_sc.save()
+    return _crawl_report(start_sc, summary, cached=False)
+
+
+def _crawl_object_ids(sc: Sidecar) -> list[str]:
+    """The docmodel object ids for a crawled page (empty if no model / no pdfdrill)."""
+    if not sc.has_blob("model.docmodel.json"):
+        return []
+    try:
+        doc = json.loads(sc.read_blob("model.docmodel.json") or "{}")
+        objs = doc.get("objects", {})
+        if isinstance(objs, dict):
+            return list(objs.keys())
+        if isinstance(objs, list):
+            return [o.get("id", "") for o in objs if isinstance(o, dict) and o.get("id")]
+        return []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _crawl_report(sc: Sidecar, summary: dict, cached: bool) -> str:
+    tag = "cached crawl" if cached else "crawled"
+    pages = summary.get("pages", [])
+    lines = [
+        f"{tag} {summary.get('start')}: {summary.get('pages_visited')} page(s) "
+        f"(depth {summary.get('depth')}, max {summary.get('max_pages')}, "
+        f"{summary.get('links_followed')} link(s) followed)",
+    ]
+    if summary.get("robots_skipped"):
+        lines.append(f"  robots.txt disallowed: {summary['robots_skipped']} page(s) skipped")
+    for p in pages:
+        lines.append(f"  [{p['depth']}] {p['id']:<28} {p['objects']:>3} objs · "
+                     f"{p['internal_links']} internal / {p['external_links']} external links")
+    lines.append(f"  → crawl summary: {sc.blob_path('crawl.json')}")
+    lines.append("  next: retrieve <url> <query> · chatlog <url> --ask …")
+    return "\n".join(lines)
+
+
+# -- M5 retrieve (offline lexical IDF/overlap over the docmodel Document) ------
+#
+# Reuse pdfdrill's REAL retrieve.py (pure + stdlib) over the htmldrill-built
+# Document — NOT a reimplementation. OFFLINE; requires a `model` (auto-ensured).
+# The retriever takes any iterable of objects exposing .type/.id/.props, which is
+# exactly doc.objects.values().
+
+def cmd_retrieve(ctx: Ctx) -> str:
+    """Rank the document's units against a query (M5, OFFLINE).
+
+    Reuses pdfdrill's lexical IDF/overlap retriever (`pdfdrill.retrieve`) over the
+    htmldrill-built docmodel Document — same operator pdfdrill runs over PDFs.
+    `requires: [model]` (auto-ensured by --ensure; offline, never a fetch).
+    Returns the ranked matching units (section/paragraph text + score), each
+    tagged by object id so an answer can cite them. `--json` emits
+    {question, units, prompt, title, subjects} for a wrapper (drillui)."""
+    sc = Sidecar(_resolve_id(ctx), work=ctx.work)
+    question = (ctx.query or "").strip()
+    if not question:
+        raise ValueError("usage: htmldrill retrieve <url> <query...>")
+    if not sc.has_blob("model.docmodel.json"):
+        raise FileNotFoundError(
+            f"no docmodel for {ctx.url!r} — run `htmldrill model {ctx.url}` first "
+            f"(offline; needs a prior fetch/render). `retrieve` is offline and "
+            f"won't fetch.")
+    # pdfdrill's retrieve.py is pure stdlib but lives in the pdfdrill src tree we
+    # bridge to; import it the same way `model` imports docmodel.
+    from .ingest_dom import ensure_pdfdrill
+    ensure_pdfdrill()
+    try:
+        from docmodel import Document  # noqa: WPS433
+        from pdfdrill import retrieve as R  # noqa: WPS433
+    except Exception as e:  # noqa: BLE001 — clear error if the import fails
+        raise ModuleNotFoundError(
+            f"htmldrill `retrieve` needs pdfdrill's retrieve.py + docmodel, but the "
+            f"import failed ({e}). Point $HTMLDRILL_PDFDRILL at a pdfdrill checkout's "
+            f"src dir.") from e
+
+    doc = Document.from_dict(json.loads(sc.read_blob("model.docmodel.json") or "{}"))
+    nodes = list(doc.objects.values())
+    t0 = time.perf_counter()
+    hits = R.retrieve(question, nodes, k=ctx.k)
+    cost_ms = (time.perf_counter() - t0) * 1000
+    title = doc.meta.get("title", "") or sc.local_id
+    prompt = R.build_prompt(question, hits, title=str(title), subjects="")
+
+    sc.set_evidence("retrieve_last_query", question)
+    sc.set_evidence("retrieve_last_hits", len(hits))
+    sc.add_fact(RETRIEVED)
+    sc.log_transition("retrieve", _prev(sc, RETRIEVED), RETRIEVED, cost_ms,
+                      f"{len(hits)} hits for {question[:40]!r}")
+    sc.save()
+
+    if ctx.as_json:
+        return json.dumps({"question": question, "units": hits, "prompt": prompt,
+                           "title": str(title), "subjects": ""}, ensure_ascii=False)
+    if not hits:
+        return (f"{sc.local_id}: no unit shares a term with {question!r} "
+                f"({len(nodes)} object(s) in the model).")
+    lines = [f"{sc.local_id}: top {len(hits)} unit(s) for {question!r} (cite these ids):"]
+    for h in hits:
+        lines.append(f"  [{h['id']}] ({h['type']}, {h['score']:.1f}) "
+                     f"{h['text'][:140].strip()}")
+    return "\n".join(lines)
+
+
+# -- M5 chatlog (offline transcript blob) ------------------------------------
+#
+# Append a Q&A turn to a per-target chat log blob (chat.jsonl) and show it. Same
+# line shape as pdfdrill's cmd_chatlog (question, answer, units, model, ts) so a
+# transcript reader is identical; the semantic-kitem half is dropped (htmldrill
+# has no semantic graph). No network.
+
+def cmd_chatlog(ctx: Ctx) -> str:
+    """Append a Q&A turn to the per-target chat transcript, or show it (M5).
+
+    `htmldrill chatlog <url> --ask "Q" --answer "A" [--units id,id] [--model name]`
+    appends one JSON line to ``chat.jsonl`` in the target's blob dir;
+    `htmldrill chatlog <url>` (no --ask) prints the existing transcript. Line
+    shape mirrors pdfdrill: {question, answer, units, model, ts}. OFFLINE."""
+    sc = Sidecar(_resolve_id(ctx), work=ctx.work)
+    log_path = sc.blob_path("chat.jsonl")
+
+    if ctx.ask:
+        unit_ids = [u for u in (ctx.units or "").split(",") if u.strip()]
+        turn = {
+            "question": ctx.ask,
+            "answer": ctx.answer or "",
+            "units": unit_ids,
+            "model": ctx.model_name or "",
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+        }
+        sc.blob_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(turn, ensure_ascii=False) + "\n")
+        sc.set_layer("chatlog", {"path": "chat.jsonl", "format": "application/jsonl"})
+        n_turns = _chatlog_count(log_path)
+        sc.set_evidence("chatlog_turns", n_turns)
+        sc.add_fact(CHATLOGGED)
+        sc.log_transition("chatlog", _prev(sc, CHATLOGGED), CHATLOGGED, 0,
+                          f"appended turn {n_turns} ({len(unit_ids)} units)")
+        sc.save()
+        return (f"{sc.local_id}: appended turn {n_turns} to the chat log\n"
+                f"  Q: {ctx.ask[:80]}\n"
+                f"  A: {(ctx.answer or '')[:80]}\n"
+                f"  → {log_path}")
+
+    # show mode
+    if not log_path.exists():
+        return (f"{sc.local_id}: no chat log yet — append one with "
+                f"`htmldrill chatlog {ctx.url} --ask \"…\" --answer \"…\"`.")
+    lines = [f"{sc.local_id}: chat transcript ({_chatlog_count(log_path)} turn(s))"]
+    with open(log_path, encoding="utf-8") as f:
+        for i, raw in enumerate(f, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                t = json.loads(raw)
+            except Exception:  # noqa: BLE001
+                continue
+            units = ", ".join(t.get("units", []))
+            lines.append(f"  [{i}] {t.get('ts', '')}  ({t.get('model', '') or '—'})")
+            lines.append(f"      Q: {t.get('question', '')[:100]}")
+            lines.append(f"      A: {t.get('answer', '')[:100]}")
+            if units:
+                lines.append(f"      grounded in: {units}")
+    lines.append(f"  → {log_path}")
+    return "\n".join(lines)
+
+
+def _chatlog_count(log_path: Path) -> int:
+    if not log_path.exists():
+        return 0
+    with open(log_path, encoding="utf-8") as f:
+        return sum(1 for line in f if line.strip())
+
+
 # -- state / planning / diagnostics ------------------------------------------
 
 def cmd_artifacts(ctx: Ctx) -> str:
@@ -1147,6 +1498,9 @@ HANDLERS = {
     "llmtext": cmd_llmtext,
     "splits": cmd_splits,
     "materialize": cmd_materialize,
+    "crawl": cmd_crawl,
+    "retrieve": cmd_retrieve,
+    "chatlog": cmd_chatlog,
     "artifacts": cmd_artifacts,
     "status": cmd_status,
     "steps": cmd_steps,

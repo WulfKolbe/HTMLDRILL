@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Crawl Fixture — Index</title>
+  <meta name="description" content="Root of a tiny offline interlinked site for crawl tests.">
+</head>
+<body>
+  <h1>Crawl Fixture Index</h1>
+  <p>This is the root page of a deterministic offline crawl fixture. It links to
+     two sibling pages via relative hrefs so a depth-1 same-origin crawl over
+     <code>file://</code> discovers exactly two internal targets.</p>
+  <nav>
+    <ul>
+      <li><a href="page-a.html">Page A — about bit fields</a></li>
+      <li><a href="page-b.html">Page B — about ADS-B decoding</a></li>
+      <li><a href="https://external.example.org/elsewhere">External link (must classify as external)</a></li>
+    </ul>
+  </nav>
+</body>
+</html>

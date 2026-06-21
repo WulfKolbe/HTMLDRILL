@@ -145,6 +145,27 @@ commands:
     network: true
     done_when: fact:MATERIALIZED
 
+  # -- Crawl / retrieve / chat (M5) --
+  # `crawl` touches the NETWORK for http(s) (offline for file://), so — like
+  # fetch/render — it is NEVER listed in any command's `requires:`. `retrieve` is
+  # OFFLINE and requires `model` (auto-ensured). `chatlog` is OFFLINE, no model.
+  - name: crawl
+    section: Crawl / retrieve / chat (M5)
+    summary: Bounded same-origin crawl from a start URL — fetch+model each page, follow internal links to --depth (--max cap, cycle-safe). NETWORK for http; offline for file://. Records CRAWLED.
+    network: true
+    done_when: fact:CRAWLED
+
+  - name: retrieve
+    section: Crawl / retrieve / chat (M5)
+    summary: Rank the document's units against a query using pdfdrill's lexical IDF/overlap retriever over the docmodel (offline; --json for a wrapper). Records RETRIEVED.
+    requires: [model]
+    done_when: fact:RETRIEVED
+
+  - name: chatlog
+    section: Crawl / retrieve / chat (M5)
+    summary: Append a Q&A turn (--ask/--answer/--units/--model) to the per-target chat.jsonl transcript, or show it. Offline. Records CHATLOGGED.
+    done_when: fact:CHATLOGGED
+
   # -- State & planning --
   - name: artifacts
     section: State & planning

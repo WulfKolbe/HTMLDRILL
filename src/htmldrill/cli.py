@@ -37,6 +37,15 @@ def _ctx(args) -> Ctx:
         timeout=getattr(args, "timeout", F.DEFAULT_TIMEOUT),
         window=getattr(args, "window", "1280,900"),
         render_delta=getattr(args, "render_delta", False),
+        query=" ".join(getattr(args, "query", None) or []) or None,
+        k=getattr(args, "k", 8),
+        ask=getattr(args, "ask", None),
+        answer=getattr(args, "answer", None),
+        units=getattr(args, "units", None),
+        model_name=getattr(args, "model_name", "") or "",
+        depth=getattr(args, "depth", 1),
+        max_pages=getattr(args, "max_pages", 20),
+        same_origin=getattr(args, "same_origin", True),
     )
 
 
@@ -146,6 +155,49 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=float, default=45.0)
     p.add_argument("--window", default="1280,900", help="viewport WxH (default 1280,900)")
     p.set_defaults(cmd="materialize")
+
+    # crawl (M5) — bounded same-origin frontier (network for http; offline file://)
+    p = sub.add_parser("crawl",
+                       help="bounded same-origin crawl: fetch+model each page, "
+                            "follow internal links to --depth (network for http)")
+    url_arg(p); work_arg(p)
+    p.add_argument("--depth", type=int, default=1, help="max link depth (default 1)")
+    p.add_argument("--max", dest="max_pages", type=int, default=20,
+                   help="hard cap on pages visited (default 20)")
+    p.add_argument("--same-origin", dest="same_origin", action="store_true",
+                   default=True, help="restrict to same-origin links (default on)")
+    p.add_argument("--cross-origin", dest="same_origin", action="store_false",
+                   help="allow following off-origin internal links too")
+    p.add_argument("--force", action="store_true", help="re-crawl even if CRAWLED")
+    p.add_argument("--ua", help="override User-Agent (and robots UA)")
+    p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
+    p.set_defaults(cmd="crawl")
+
+    # retrieve (M5) — offline lexical ranking over the docmodel (requires model)
+    p = sub.add_parser("retrieve",
+                       help="rank the document's units against a query "
+                            "(offline; reuses pdfdrill's retriever; needs a model)")
+    url_arg(p)
+    p.add_argument("query", nargs="+", help="the question (one or more words)")
+    work_arg(p)
+    p.add_argument("--k", type=int, default=8, help="top-k units (default 8)")
+    p.add_argument("--json", action="store_true",
+                   help="emit {question,units,prompt,title,subjects} JSON")
+    p.add_argument("--ensure", action="store_true",
+                   help="auto-run missing OFFLINE prerequisites first (model)")
+    p.set_defaults(cmd="retrieve")
+
+    # chatlog (M5) — append/show a per-target Q&A transcript (offline)
+    p = sub.add_parser("chatlog",
+                       help="append a Q&A turn (--ask/--answer) to the chat log, "
+                            "or show the transcript")
+    url_arg(p); work_arg(p)
+    p.add_argument("--ask", help="the question to append (with --answer)")
+    p.add_argument("--answer", default="", help="the answer text for --ask")
+    p.add_argument("--units", help="comma-separated grounding unit ids")
+    p.add_argument("--model", dest="model_name", default="",
+                   help="the LLM name recorded with the turn")
+    p.set_defaults(cmd="chatlog")
 
     # artifacts / status — state views
     p = sub.add_parser("artifacts", help="list the blobs captured for this target")

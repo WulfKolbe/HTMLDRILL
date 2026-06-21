@@ -116,6 +116,14 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 | `htmldrill splits` | Detect split/hidden content (collapsed details, template/noscript, lazy img, content-visibility, role=feed), classified by kind + repair energy. Records SPLITS_KNOWN. |
 | `htmldrill materialize` | Recover hidden content as docmodel role=continuation fragments — offline expands in-markup bodies; --render-delta runs headless virtual-time render and diffs for post-render blocks. Records MATERIALIZED. _(network)_ |
 
+### Crawl / retrieve / chat (M5)
+
+| Command | Returns |
+|---|---|
+| `htmldrill crawl` | Bounded same-origin crawl from a start URL — fetch+model each page, follow internal links to --depth (--max cap, cycle-safe). NETWORK for http; offline for file://. Records CRAWLED. _(network)_ |
+| `htmldrill retrieve` | Rank the document's units against a query using pdfdrill's lexical IDF/overlap retriever over the docmodel (offline; --json for a wrapper). Records RETRIEVED. |
+| `htmldrill chatlog` | Append a Q&A turn (--ask/--answer/--units/--model) to the per-target chat.jsonl transcript, or show it. Offline. Records CHATLOGGED. |
+
 ### State & planning
 
 | Command | Returns |
