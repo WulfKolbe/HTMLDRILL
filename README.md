@@ -1,4 +1,4 @@
-# htmldrill
+# HTMLDRILL
 
 A token-economical, shallow-first **drill-down toolkit for HTML / live web
 documents** — a structural twin of [`pdfdrill`](../MX/PDFDRILL) and
