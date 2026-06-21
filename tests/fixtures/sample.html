@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A sample page for htmldrill L0 tests.">
+  <meta property="og:title" content="Sample Page">
+  <meta property="og:url" content="https://example.com/sample">
+  <meta name="twitter:card" content="summary">
+  <title>Sample Page — htmldrill</title>
+  <link rel="canonical" href="https://example.com/sample">
+  <link rel="alternate" type="application/rss+xml" title="Feed" href="https://example.com/feed.xml">
+  <script type="application/ld+json">
+  {"@context":"https://schema.org","@type":"Article","headline":"Sample","author":{"@type":"Person","name":"Ada"}}
+  </script>
+  <script type="application/ld+json">{ this is not valid json }</script>
+</head>
+<body data-api="https://api.example.com/v1/secret-endpoint">
+  <h1>Main Title</h1>
+  <h2>Section One</h2>
+  <p>Visible link: <a href="/about">About us</a> and
+     <a href="https://external.example.org/page">External</a>.</p>
+  <h2>Section Two</h2>
+  <div itemscope itemtype="https://schema.org/Product">
+    <span itemprop="name">Widget</span>
+    <span itemprop="price">9.99</span>
+  </div>
+  <script>
+    const cfg = { endpoint: "https://hidden.example.net/track?id=42" };
+  </script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+# htmldrill command manifest — the single source of truth for the CLI surface.
+# Mirrors PDFDRILL/CHATDRILL commands.yaml. skillsync regenerates --help and the
+# SKILL.md command tables from this file; the CI drift gate fails if cli.py's
+# HANDLERS dict and this manifest disagree.
+#
+# done_when detector kinds:
+#   fact:NAME        the sidecar carries that fact
+#   model            the model.docmodel.json artifact exists in the blob dir
+#   artifact:REL     a blob at REL exists in the blob dir
+#
+# SAFETY: `requires:` is auto-run by --ensure WITHOUT an offline check, so the
+# NETWORK step `fetch` is never listed as a prerequisite of anything. Snapshot
+# commands hard-check the FETCHED fact and ask the user to run `fetch` first.
+version: 1
+commands:
+  # -- Diagnostics (no target, no network) --
+  - name: doctor
+    section: Diagnostics
+    summary: Environment self-check (python, stdlib html.parser, pyyaml, work dir).
+
+  - name: config
+    section: Diagnostics
+    summary: Print the effective configuration (work dir, user-agent, timeout).
+
+  # -- Fetch (the only network command) --
+  - name: fetch
+    section: Fetch (network)
+    summary: Fetch the URL; snapshot raw HTML + response headers as blobs. Records FETCHED.
+    network: true
+    done_when: fact:FETCHED
+
+  # -- Introspection (snapshot, no render) --
+  - name: size
+    section: Introspection (snapshot, no render)
+    summary: Bytes, line/tag count, framework guess, and a static-vs-render verdict.
+    done_when: fact:SIZE_KNOWN
+
+  - name: headers
+    section: Introspection (snapshot, no render)
+    summary: The captured HTTP response headers, one per line.
+
+  - name: meta
+    section: Introspection (snapshot, no render)
+    summary: <meta> tags (charset, viewport, description, robots, author) and <title>.
+    done_when: fact:META_KNOWN
+
+  - name: canonical
+    section: Introspection (snapshot, no render)
+    summary: The <link rel=canonical> href and any og:url, or states none found.
+    done_when: fact:CANONICAL_KNOWN
+
+  - name: links
+    section: Introspection (snapshot, no render)
+    summary: Anchors split internal/external, plus URLs in the markup that are never visible anchors.
+    done_when: fact:LINKS_KNOWN
+
+  - name: jsonld
+    section: Introspection (snapshot, no render)
+    summary: Parse each application/ld+json block; report @types and top-level keys (or parse errors).
+    done_when: fact:JSONLD_KNOWN
+
+  - name: microdata
+    section: Introspection (snapshot, no render)
+    summary: itemscope/itemtype/itemprop items grouped by itemtype.
+    done_when: fact:MICRODATA_KNOWN
+
+  - name: opengraph
+    section: Introspection (snapshot, no render)
+    summary: All og:* and twitter:* meta properties as key→value.
+    done_when: fact:OPENGRAPH_KNOWN
+
+  - name: feeds
+    section: Introspection (snapshot, no render)
+    summary: <link rel=alternate> RSS/Atom feed URLs, or states none.
+    done_when: fact:FEEDS_KNOWN
+
+  - name: outline
+    section: Introspection (snapshot, no render)
+    summary: The h1–h6 heading tree in document order, as an indented outline.
+    done_when: fact:OUTLINE_KNOWN
+
+  # -- Render (headless, network) — the escalation tier --
+  - name: render
+    section: Render (headless, network)
+    summary: Headless-render the page with Chrome; snapshot the rendered DOM + a screenshot. Records RENDERED.
+    network: true
+    done_when: fact:RENDERED
+
+  - name: dom
+    section: Render (headless, network)
+    summary: Rendered DOM stats (tags/headings/anchors) and the delta vs the static markup.
+
+  - name: text
+    section: Render (headless, network)
+    summary: Visible text content (rendered DOM preferred, static snapshot fallback).
+    done_when: fact:TEXT_KNOWN
+
+  - name: screenshot
+    section: Render (headless, network)
+    summary: Report the captured screenshot path and size (produced by render).
+
+  - name: compare
+    section: Render (headless, network)
+    summary: static-DOM | rendered-DOM | screenshot fidelity table — surfaces content only present after render.
+    done_when: fact:COMPARED
+
+  # -- Model (offline) — lift the captured DOM into the shared docmodel IR --
+  - name: model
+    section: Model (offline)
+    summary: Build a shared docmodel Document from the captured DOM (offline; needs a prior fetch/render). Records MODEL_BUILT.
+    done_when: fact:MODEL_BUILT
+
+  # -- Projectors (offline) — pdfdrill's REAL docops projectors over the model --
+  # OFFLINE: each requires `model` (auto-ensured by --ensure; never a fetch).
+  - name: tiddlers
+    section: Projectors (offline)
+    summary: Project the docmodel through pdfdrill's TiddlyWikiProjector; write tiddlers.json (+ ./tiddlers/). Records TIDDLERS_BUILT.
+    requires: [model]
+    done_when: fact:TIDDLERS_BUILT
+
+  - name: md
+    section: Projectors (offline)
+    summary: Project the docmodel through pdfdrill's LLMCompactProjector; write token-optimized md.md. Records MD_BUILT.
+    requires: [model]
+    done_when: fact:MD_BUILT
+
+  - name: llmtext
+    section: Projectors (offline)
+    summary: Project the docmodel through pdfdrill's PlainTextProjector; write flat llm.txt. Records LLMTEXT_BUILT.
+    requires: [model]
+    done_when: fact:LLMTEXT_BUILT
+
+  # -- State & planning --
+  - name: artifacts
+    section: State & planning
+    summary: List the blobs captured for this target with sizes.
+
+  - name: status
+    section: State & planning
+    summary: Show the sidecar state (facts, evidence, transitions).
+
+  - name: steps
+    section: State & planning
+    summary: Show the prerequisite chain for a command on a target.

@@ -1,0 +1,40 @@
+htmldrill — token-economical drill-down toolkit for HTML documents
+
+Diagnostics:
+  htmldrill doctor                            Environment self-check (python, stdlib html.parser, pyyaml, work dir).
+  htmldrill config                            Print the effective configuration (work dir, user-agent, timeout).
+
+Fetch (network):
+  htmldrill fetch                             Fetch the URL; snapshot raw HTML + response headers as blobs. Records FETCHED.
+
+Introspection (snapshot, no render):
+  htmldrill size                              Bytes, line/tag count, framework guess, and a static-vs-render verdict.
+  htmldrill headers                           The captured HTTP response headers, one per line.
+  htmldrill meta                              <meta> tags (charset, viewport, description, robots, author) and <title>.
+  htmldrill canonical                         The <link rel=canonical> href and any og:url, or states none found.
+  htmldrill links                             Anchors split internal/external, plus URLs in the markup that are never visible anchors.
+  htmldrill jsonld                            Parse each application/ld+json block; report @types and top-level keys (or parse errors).
+  htmldrill microdata                         itemscope/itemtype/itemprop items grouped by itemtype.
+  htmldrill opengraph                         All og:* and twitter:* meta properties as key→value.
+  htmldrill feeds                             <link rel=alternate> RSS/Atom feed URLs, or states none.
+  htmldrill outline                           The h1–h6 heading tree in document order, as an indented outline.
+
+Render (headless, network):
+  htmldrill render                            Headless-render the page with Chrome; snapshot the rendered DOM + a screenshot. Records RENDERED.
+  htmldrill dom                               Rendered DOM stats (tags/headings/anchors) and the delta vs the static markup.
+  htmldrill text                              Visible text content (rendered DOM preferred, static snapshot fallback).
+  htmldrill screenshot                        Report the captured screenshot path and size (produced by render).
+  htmldrill compare                           static-DOM | rendered-DOM | screenshot fidelity table — surfaces content only present after render.
+
+Model (offline):
+  htmldrill model                             Build a shared docmodel Document from the captured DOM (offline; needs a prior fetch/render). Records MODEL_BUILT.
+
+Projectors (offline):
+  htmldrill tiddlers                          Project the docmodel through pdfdrill's TiddlyWikiProjector; write tiddlers.json (+ ./tiddlers/). Records TIDDLERS_BUILT.
+  htmldrill md                                Project the docmodel through pdfdrill's LLMCompactProjector; write token-optimized md.md. Records MD_BUILT.
+  htmldrill llmtext                           Project the docmodel through pdfdrill's PlainTextProjector; write flat llm.txt. Records LLMTEXT_BUILT.
+
+State & planning:
+  htmldrill artifacts                         List the blobs captured for this target with sizes.
+  htmldrill status                            Show the sidecar state (facts, evidence, transitions).
+  htmldrill steps                             Show the prerequisite chain for a command on a target.

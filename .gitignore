@@ -1,0 +1,12 @@
+# Runtime artifacts (per-target sidecars + blobs)
+/drills/
+# Projector output written by `htmldrill tiddlers` into the live wiki folder
+/tiddlers/
+# Scratch space — use ./tmp, never /tmp
+/tmp/
+# Python
+__pycache__/
+*.pyc
+.venv/
+# Env (secrets / local overrides)
+.env

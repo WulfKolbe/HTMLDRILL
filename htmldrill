@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# htmldrill wrapper — runs the CLI with src/ on PYTHONPATH and .env loaded.
+set -e
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$here/.env" ] && set -a && . "$here/.env" && set +a
+export PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m htmldrill "$@"

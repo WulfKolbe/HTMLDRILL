@@ -1,0 +1,21 @@
+# .github/workflows/skill-sync.yml — drift gate for the command surface.
+name: skill-sync
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+      # 1) manifest ↔ HANDLERS dict (static)
+      - run: python3 tools/skillsync.py check .
+      # 2) generated artifacts are committed & up to date (no dirty diff)
+      - run: |
+          python3 tools/skillsync.py render-help .
+          python3 tools/skillsync.py render-skill .
+          git diff --exit-code -- SKILL.md src/htmldrill/_help_generated.txt \
+            || { echo "::error::run 'python3 tools/skillsync.py all .' and commit the regenerated files"; exit 1; }
+      # 3) the package imports and the CLI dispatches
+      - run: PYTHONPATH=src python3 -m htmldrill doctor
