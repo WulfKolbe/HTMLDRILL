@@ -93,3 +93,57 @@ def render(url: str, timeout: float = 45.0, window: str = "1280,900",
                 shot = None          # screenshot is best-effort; DOM is the point
 
     return RenderResult(dom=dom, screenshot=shot, chrome=chrome, final_url=target)
+
+
+class MaterializeResult:
+    """The render-delta payload: the virtual-time-materialized DOM, the plain DOM
+    (for the diff), and which Chrome produced them."""
+
+    def __init__(self, dom: str, plain_dom: str, chrome: str, final_url: str):
+        self.dom = dom
+        self.plain_dom = plain_dom
+        self.chrome = chrome
+        self.final_url = final_url
+
+
+#: the probe-documented render-delta flags — let timers/microtasks/animation
+#: frames run to completion before the DOM is dumped, materializing JS-injected
+#: nodes (e.g. a setTimeout-appended block) that a plain --dump-dom never sees.
+_VIRTUAL_TIME_FLAGS = ["--virtual-time-budget=5000",
+                       "--run-all-compositor-stages-before-draw"]
+
+
+def render_materialize(url: str, timeout: float = 45.0,
+                       window: str = "1280,900") -> MaterializeResult:
+    """Render twice — plain, then with the virtual-time-budget flag — so the
+    caller can diff the two DOMs and recover the blocks JS materialized after
+    load (timer/microtask/raf content). NETWORK + headless.
+
+    Raises FileNotFoundError with a clear message if no Chrome is found.
+
+    LIMIT (honest): virtual-time materializes timer/microtask/animation-frame
+    content but NOT scroll-intersection content — IntersectionObserver-gated
+    infinite-scroll needs CDP input events (an explicit scroll/setViewport step)
+    which this plain-flag path does not drive."""
+    chrome = find_chrome()
+    if not chrome:
+        raise FileNotFoundError(
+            "no Chrome/Chromium found for --render-delta — set $HTMLDRILL_CHROME "
+            "or install one (tried: " + ", ".join(_CANDIDATES) + ")")
+    target = _as_chrome_url(url)
+    size = [f"--window-size={window}"]
+
+    plain_cmd = [chrome, *_flags(), *size, "--dump-dom", target]
+    plain = subprocess.run(plain_cmd, capture_output=True, text=True, timeout=timeout)
+    if plain.returncode != 0 and not plain.stdout:
+        raise RuntimeError(f"chrome plain --dump-dom failed (rc={plain.returncode}): "
+                           f"{plain.stderr.strip()[:300]}")
+
+    vt_cmd = [chrome, *_flags(), *size, *_VIRTUAL_TIME_FLAGS, "--dump-dom", target]
+    vt = subprocess.run(vt_cmd, capture_output=True, text=True, timeout=timeout)
+    if vt.returncode != 0 and not vt.stdout:
+        raise RuntimeError(f"chrome virtual-time --dump-dom failed (rc={vt.returncode}): "
+                           f"{vt.stderr.strip()[:300]}")
+
+    return MaterializeResult(dom=vt.stdout, plain_dom=plain.stdout,
+                             chrome=chrome, final_url=target)

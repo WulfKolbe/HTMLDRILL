@@ -130,6 +130,21 @@ commands:
     requires: [model]
     done_when: fact:LLMTEXT_BUILT
 
+  # -- Split recovery (L4) — lazy-load & virtualization --
+  # `splits` is an OFFLINE detector (reads the snapshot). `materialize` is an
+  # ESCALATION repair: it is NEVER listed in any command's `requires:` (its
+  # --render-delta path can touch the network), so --ensure can never auto-run it.
+  - name: splits
+    section: Split recovery (L4)
+    summary: Detect split/hidden content (collapsed details, template/noscript, lazy img, content-visibility, role=feed), classified by kind + repair energy. Records SPLITS_KNOWN.
+    done_when: fact:SPLITS_KNOWN
+
+  - name: materialize
+    section: Split recovery (L4)
+    summary: Recover hidden content as docmodel role=continuation fragments — offline expands in-markup bodies; --render-delta runs headless virtual-time render and diffs for post-render blocks. Records MATERIALIZED.
+    network: true
+    done_when: fact:MATERIALIZED
+
   # -- State & planning --
   - name: artifacts
     section: State & planning

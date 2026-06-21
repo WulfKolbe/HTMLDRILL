@@ -540,3 +540,210 @@ def tiddlywiki_store(html: str) -> list[dict]:
             text = text.replace(a, b)
         out.append({"title": title, "text": text, "type": "text/vnd.tiddlywiki"})
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Split / hidden-content detection (M4 — lazy-load & virtualization recovery)
+#
+# The lazy-load tier of the tower: a page splits its content across a *toggle*,
+# a *scroll*, an *intersection*, or a render hint — a collapsed <details>, a
+# declarative-shadow <template>, a <noscript> fallback, a loading="lazy" image,
+# a role="feed" virtualized list. Each is content the rendered VIEW hides but the
+# static MARKUP keeps. The decisive probe finding: stdlib html.parser does NOT
+# treat <template>/<noscript> as inert — it surfaces their bodies as ordinary
+# data events, so the body text is recoverable OFFLINE, no browser.
+#
+# A :class:`Split` records, per occurrence: the KIND (what kind of split), the
+# REPAIR ENERGY (how a browser would un-hide it — toggle/scroll/intersection, or
+# `none` when the content is already in the static markup), the recovered body
+# text (when present statically), and a short evidence token.
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class Split:
+    """One detected split / hidden-content occurrence.
+
+    ``kind`` ∈ {collapsed, hidden, deferred, lazy-media, virtualized}.
+    ``energy`` ∈ {toggle, scroll, intersection, none} — the in-browser action
+    that materializes it (``none`` == content already present in the markup).
+    ``recovered`` is the body text we pulled out statically (may be empty for
+    lazy-media / virtualized, where there is a reference but no inline body).
+    """
+    kind: str
+    energy: str
+    tag: str
+    evidence: str
+    recovered: str = ""
+    props: dict = field(default_factory=dict)
+
+
+#: render-hint CSS property: an element with ``content-visibility:auto|hidden``
+#: is skipped/virtualized by the browser, but its text is STILL in the markup —
+#: a render hint, not a content split. Detected as a CSS token.
+_CV_RE = re.compile(r"content-visibility\s*:\s*(auto|hidden)", re.I)
+
+
+class _SplitCollector(HTMLParser):
+    """Single SAX pass collecting split/hidden-content occurrences.
+
+    For the *container* kinds (details / template / noscript) we capture the
+    body text between start and end so ``materialize`` can recover it. The probe
+    confirmed html.parser emits those bodies as data events; we still guard the
+    swallow case (a parser build that drops them) by recording the occurrence
+    with an empty body rather than missing it entirely.
+    """
+
+    #: container tags whose body text we buffer (start→end)
+    _CAPTURE = {"details", "template", "noscript"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.splits: list[Split] = []
+        # one capture frame per nested container; (kind, energy, tag, evidence,
+        # props, buf) so nested <details> inside <details> each recover their own
+        self._stack: list[dict] = []
+        # CSS content-visibility seen in <style> blocks
+        self._in_style = False
+        self._style_buf: list[str] = []
+        self.cv_hits = 0
+        # virtualized-feed bookkeeping: declared size vs rendered children
+        self._feed_stack: list[dict] = []
+
+    # -- helpers --
+    @staticmethod
+    def _has_open(a: dict) -> bool:
+        # `open` may arrive as ('open','') or ('open',None); presence is what counts
+        return "open" in a
+
+    def handle_starttag(self, tag, attrs):
+        a = {k.lower(): (v or "") for k, v in attrs}
+        rawattrs = " ".join(f'{k}="{v}"' if v else k for k, v in a.items())
+
+        if tag == "style":
+            self._in_style = True
+            self._style_buf = []
+
+        # inline content-visibility render hint
+        style = a.get("style", "")
+        if style and _CV_RE.search(style):
+            self.cv_hits += 1
+            self.splits.append(Split(
+                kind="hidden", energy="none", tag=tag,
+                evidence=f'style="…content-visibility…" on <{tag}>',
+                recovered="", props={"via": "inline-style"}))
+
+        # container kinds: details / template / noscript
+        if tag in self._CAPTURE:
+            if tag == "details":
+                kind, energy = "collapsed", ("none" if self._has_open(a) else "toggle")
+                ev = f'<details{(" open" if self._has_open(a) else "")}'
+            elif tag == "template":
+                kind, energy = "deferred", "none"
+                sr = a.get("shadowrootmode", "")
+                ev = f'<template{(" shadowrootmode=" + sr) if sr else ""}'
+            else:  # noscript
+                kind, energy = "deferred", "none"
+                ev = "<noscript>"
+            self._stack.append({
+                "kind": kind, "energy": energy, "tag": tag,
+                "evidence": ev, "props": dict(a), "buf": []})
+            return
+
+        # lazy-media image: loading="lazy" (or bare loading=lazy) — the src is in
+        # the markup, only the BYTES are deferred, so the reference is recoverable.
+        if tag == "img" and a.get("loading", "").strip().lower() == "lazy":
+            src = a.get("src", "") or a.get("data-src", "")
+            self.splits.append(Split(
+                kind="lazy-media", energy="intersection", tag="img",
+                evidence='loading="lazy"',
+                recovered=src,
+                props={"src": src, "alt": a.get("alt", "")}))
+
+        # virtualized list: role="feed" or an explicit aria-setsize that exceeds
+        # the children the markup actually carries (infinite scroll / windowing).
+        role = a.get("role", "").lower()
+        setsize = a.get("aria-setsize", "")
+        if role == "feed" or setsize:
+            try:
+                declared = int(setsize) if setsize else 0
+            except ValueError:
+                declared = 0
+            self._feed_stack.append({
+                "tag": tag, "declared": declared, "children": 0,
+                "role": role, "evidence": (f'role="feed"' if role == "feed"
+                                           else f'aria-setsize="{setsize}"')})
+            return
+
+        # count children of the innermost open feed (rough virtualization signal)
+        if self._feed_stack and tag in ("li", "article", "div"):
+            self._feed_stack[-1]["children"] += 1
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data):
+        if self._in_style:
+            self._style_buf.append(data)
+        if self._stack:
+            self._stack[-1]["buf"].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "style" and self._in_style:
+            self._in_style = False
+            css = "".join(self._style_buf)
+            for m in _CV_RE.finditer(css):
+                self.cv_hits += 1
+                self.splits.append(Split(
+                    kind="hidden", energy="none", tag="style",
+                    evidence=f"content-visibility:{m.group(1)} (in <style>)",
+                    recovered="", props={"via": "stylesheet"}))
+            self._style_buf = []
+
+        if self._feed_stack and tag == self._feed_stack[-1]["tag"]:
+            fr = self._feed_stack.pop()
+            # virtualized only when fewer children rendered than the feed declares,
+            # OR a bare role="feed" with no explicit count (treated as windowed).
+            declared, rendered = fr["declared"], fr["children"]
+            if declared > rendered or (fr["role"] == "feed" and declared == 0):
+                self.splits.append(Split(
+                    kind="virtualized", energy="scroll", tag=fr["tag"],
+                    evidence=fr["evidence"],
+                    recovered="",
+                    props={"declared": declared, "rendered": rendered}))
+
+        if self._stack and tag == self._stack[-1]["tag"]:
+            fr = self._stack.pop()
+            body = " ".join("".join(fr["buf"]).split())
+            self.splits.append(Split(
+                kind=fr["kind"], energy=fr["energy"], tag=fr["tag"],
+                evidence=fr["evidence"], recovered=body, props=fr["props"]))
+
+
+def detect_splits(html: str) -> list[Split]:
+    """Single lenient pass → the list of split/hidden-content occurrences.
+
+    Defensive like the rest of the module: a parse error degrades to whatever was
+    collected before it. The recovered body text is the payload ``materialize``
+    re-injects as docmodel role=continuation support fragments.
+    """
+    p = _SplitCollector()
+    try:
+        p.feed(html)
+        p.close()
+    except Exception:
+        pass
+    return p.splits
+
+
+def summarize_splits(splits: list["Split"]) -> dict:
+    """Counts per kind + per repair energy, for the command's prose + evidence."""
+    by_kind: dict[str, int] = {}
+    by_energy: dict[str, int] = {}
+    recoverable = 0
+    for s in splits:
+        by_kind[s.kind] = by_kind.get(s.kind, 0) + 1
+        by_energy[s.energy] = by_energy.get(s.energy, 0) + 1
+        if s.recovered:
+            recoverable += 1
+    return {"total": len(splits), "by_kind": by_kind,
+            "by_energy": by_energy, "recoverable": recoverable}

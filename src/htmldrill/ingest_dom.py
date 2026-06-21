@@ -79,12 +79,17 @@ def _props_for(block: H.Block, flow_index: int) -> dict:
     return p
 
 
-def build_document(html: str, bibkey: str, local_id: Optional[str] = None):
+def build_document(html: str, bibkey: str, local_id: Optional[str] = None,
+                   continuation: Optional[list[dict]] = None):
     """Build and return a docmodel :class:`Document` from page HTML.
 
     ``bibkey`` lands in ``doc.meta['bibkey']`` (load-bearing for the projectors).
-    ``local_id`` is recorded in meta for provenance. Returns the Document; the
-    caller persists it with ``json.dump(doc.to_dict())``.
+    ``local_id`` is recorded in meta for provenance. ``continuation`` is the list
+    of role=continuation support fragments recovered by `materialize` (collapsed
+    <details> / <template> / <noscript> bodies the rendered view hid); each is
+    appended as a continuation DocObject + role=continuation Realization so the
+    recovered text flows into the projectors. Returns the Document; the caller
+    persists it with ``json.dump(doc.to_dict())``.
     """
     ensure_pdfdrill()
     from docmodel import Document, DocObject, Realization  # noqa: WPS433
@@ -157,4 +162,24 @@ def build_document(html: str, bibkey: str, local_id: Optional[str] = None):
         (b.text for b in blocks if b.type == "Heading"), bibkey)
     doc.meta["block_count"] = len(blocks)
     doc.meta["section_count"] = section_seq
+
+    # role=continuation support fragments (recovered hidden content) — appended
+    # after the surface spine so the projectors emit the recovered text too.
+    if continuation:
+        base = len(blocks)
+        for j, frag in enumerate(continuation):
+            text = str(frag.get("text", "")).strip()
+            if not text:
+                continue
+            idx = base + j
+            anchor = stream.append(text=text, type="Continuation", _line_index=idx)
+            obj = DocObject(type="Paragraph", props={
+                "flow_index": idx, "text": text,
+                "continuation": True,
+                "split_kind": frag.get("kind", "deferred"),
+            })
+            obj.add_realization(Realization(
+                stream=HTML_STREAM, start=anchor, end=anchor, role="continuation"))
+            doc.add(obj)
+        doc.meta["continuation_count"] = len(continuation)
     return doc

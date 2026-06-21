@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>render-delta fixture</title>
+<style>.spacer{height:3000px}</style></head>
+<body>
+<div id="static">STATIC_CONTENT_ALWAYS_PRESENT</div>
+<div id="timer-target">PLACEHOLDER_BEFORE_TIMER</div>
+<div class="spacer"></div>
+<div id="io-target">PLACEHOLDER_BEFORE_INTERSECTION</div>
+<script>
+// Content that only appears after a timer fires (>0ms render budget needed)
+setTimeout(function(){
+  document.getElementById('timer-target').textContent = 'TIMER_INJECTED_CONTENT_AFTER_1500MS';
+  var d=document.createElement('div');
+  d.id='timer-extra';
+  d.textContent='EXTRA_TIMER_BLOCK_'.repeat(50);
+  document.body.appendChild(d);
+}, 1500);
+
+// Content injected via IntersectionObserver when element scrolls into view
+var io = new IntersectionObserver(function(entries){
+  entries.forEach(function(e){
+    if(e.isIntersecting){
+      e.target.textContent='INTERSECTION_OBSERVER_INJECTED_CONTENT';
+    }
+  });
+});
+io.observe(document.getElementById('io-target'));
+</script>
+</body>
+</html>

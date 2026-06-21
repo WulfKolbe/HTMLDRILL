@@ -36,6 +36,7 @@ def _ctx(args) -> Ctx:
         ua=getattr(args, "ua", None),
         timeout=getattr(args, "timeout", F.DEFAULT_TIMEOUT),
         window=getattr(args, "window", "1280,900"),
+        render_delta=getattr(args, "render_delta", False),
     )
 
 
@@ -124,6 +125,27 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--ensure", action="store_true",
                        help="auto-run missing OFFLINE prerequisites first (model)")
         p.set_defaults(cmd=name)
+
+    # split recovery (L4) — lazy-load & virtualization
+    p = sub.add_parser("splits",
+                       help="detect split/hidden content (collapsed/deferred/lazy/virtualized)")
+    url_arg(p); work_arg(p)
+    p.add_argument("--force", action="store_true", help="recompute even if SPLITS_KNOWN")
+    p.add_argument("--ensure", action="store_true",
+                   help="auto-run missing OFFLINE prerequisites first")
+    p.set_defaults(cmd="splits")
+
+    p = sub.add_parser("materialize",
+                       help="recover hidden content as role=continuation fragments "
+                            "(offline; --render-delta for headless virtual-time diff)")
+    url_arg(p); work_arg(p)
+    p.add_argument("--force", action="store_true", help="re-materialize even if MATERIALIZED")
+    p.add_argument("--render-delta", dest="render_delta", action="store_true",
+                   help="NETWORK: headless virtual-time render, diff vs plain render, "
+                        "record new post-render blocks (needs Chrome)")
+    p.add_argument("--timeout", type=float, default=45.0)
+    p.add_argument("--window", default="1280,900", help="viewport WxH (default 1280,900)")
+    p.set_defaults(cmd="materialize")
 
     # artifacts / status — state views
     p = sub.add_parser("artifacts", help="list the blobs captured for this target")

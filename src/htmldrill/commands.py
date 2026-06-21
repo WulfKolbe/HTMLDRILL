@@ -25,7 +25,7 @@ from typing import Optional
 
 from . import planner
 from .parse import html as H
-from .sidecar import Sidecar, work_root
+from .sidecar import Sidecar, resolve_local_id, work_root
 from .sources import fetch as F
 from .sources import render as R
 
@@ -50,6 +50,9 @@ MODEL_BUILT = "MODEL_BUILT"
 TIDDLERS_BUILT = "TIDDLERS_BUILT"
 MD_BUILT = "MD_BUILT"
 LLMTEXT_BUILT = "LLMTEXT_BUILT"
+# L4 (split recovery — lazy-load / virtualization)
+SPLITS_KNOWN = "SPLITS_KNOWN"
+MATERIALIZED = "MATERIALIZED"
 
 
 @dataclass
@@ -63,6 +66,7 @@ class Ctx:
     ua: Optional[str] = None
     timeout: float = F.DEFAULT_TIMEOUT
     window: str = "1280,900"          # render viewport
+    render_delta: bool = False        # materialize: headless virtual-time diff mode
 
 
 # -- id resolution -----------------------------------------------------------
@@ -547,8 +551,17 @@ def cmd_model(ctx: Ctx) -> str:
 
     # docmodel is the one external bridge — import lazily, only inside `model`.
     from .ingest_dom import build_document
+    # If `materialize` already recovered hidden content (role=continuation
+    # fragments), fold them into the model so a fresh build includes them too.
+    continuation = None
+    if sc.has_blob("continuation.json"):
+        try:
+            continuation = json.loads(sc.read_blob("continuation.json") or "[]")
+        except Exception:
+            continuation = None
     t0 = time.perf_counter()
-    doc = build_document(html, bibkey=bibkey, local_id=sc.local_id)
+    doc = build_document(html, bibkey=bibkey, local_id=sc.local_id,
+                         continuation=continuation)
     cost_ms = (time.perf_counter() - t0) * 1000
 
     sc.write_blob("model.docmodel.json",
@@ -730,6 +743,302 @@ def cmd_llmtext(ctx: Ctx) -> str:
                           out_blob="llm.txt", fact=LLMTEXT_BUILT)
 
 
+# -- L4 split recovery (lazy-load & virtualization) --------------------------
+#
+# A virtualized list, an infinite-scroll feed, a lazy node, or a collapsed
+# subtree is CUT content. `splits` (OFFLINE detector) reports it, classified by
+# KIND + REPAIR ENERGY. `materialize` (ESCALATION, never a `requires:`) is the
+# repair: it recovers the hidden body that is ALREADY in the markup (details /
+# template / noscript) and re-injects each as a docmodel role=continuation
+# support fragment, or — with --render-delta — runs headless Chrome with the
+# virtual-time-budget flag and records the NEW post-render blocks as continuation
+# fragments. Each materialization is a confidence-bearing claim in the log.
+
+#: per-kind one-line gloss for the prose report
+_SPLIT_KIND_GLOSS = {
+    "collapsed": "collapsed <details> (toggle to open)",
+    "hidden": "content-visibility render hint (text still in markup)",
+    "deferred": "<template>/<noscript> deferred body",
+    "lazy-media": "loading=\"lazy\" image (src in markup, bytes deferred)",
+    "virtualized": "role=feed / aria-setsize windowed list",
+}
+
+
+def cmd_splits(ctx: Ctx) -> str:
+    """L4 split/hidden-content DETECTOR (OFFLINE — reads the snapshot, no render).
+
+    Parses the captured static (or rendered) snapshot and reports content the
+    rendered VIEW hides but the static MARKUP keeps, each classified by KIND
+    (collapsed / hidden / deferred / lazy-media / virtualized) and REPAIR ENERGY
+    (toggle / scroll / intersection / none). Records the fact SPLITS_KNOWN plus
+    evidence so `materialize` can recover the bodies. Idempotent via the fact /
+    --force."""
+    sc = Sidecar(_resolve_id(ctx), work=ctx.work)
+    if not (sc.has(RENDERED) or sc.has(FETCHED)):
+        raise FileNotFoundError(
+            f"no snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` first; "
+            f"`splits` is offline and won't fetch.")
+    html, source = _rendered_or_static(sc)
+    splits = H.detect_splits(html)
+    summary = H.summarize_splits(splits)
+    # record a compact evidence digest (kind/energy/evidence/recovered-length) —
+    # the full recovered bodies are re-derived by `materialize` from the snapshot.
+    digest = [{"kind": s.kind, "energy": s.energy, "tag": s.tag,
+               "evidence": s.evidence, "recovered_chars": len(s.recovered)}
+              for s in splits]
+    sc.set_evidence("splits_source", source)
+    sc.set_evidence("splits_total", summary["total"])
+    sc.set_evidence("splits_by_kind", summary["by_kind"])
+    sc.set_evidence("splits_by_energy", summary["by_energy"])
+    sc.set_evidence("splits_recoverable", summary["recoverable"])
+    sc.set_evidence("splits_digest", digest)
+    sc.add_fact(SPLITS_KNOWN)
+    sc.log_transition("splits", _prev(sc, SPLITS_KNOWN), SPLITS_KNOWN, 0,
+                      f"{summary['total']} splits {summary['by_kind']} from {source}")
+    sc.save()
+    if not splits:
+        return (f"{sc.local_id}: no split/hidden content detected in the {source} "
+                f"markup (no collapsed <details>, <template>/<noscript>, "
+                f"loading=lazy img, content-visibility, or role=feed).")
+    lines = [f"{sc.local_id}: {summary['total']} split(s) in the {source} markup "
+             f"— {summary['recoverable']} carry body text recoverable offline"]
+    lines.append("  by kind:   " + ", ".join(
+        f"{k}×{n}" for k, n in sorted(summary["by_kind"].items())))
+    lines.append("  by energy: " + ", ".join(
+        f"{e}×{n}" for e, n in sorted(summary["by_energy"].items())) +
+        "   (none = already in markup; toggle/scroll/intersection = browser action)")
+    # a few examples, preferring those with recovered body
+    examples = sorted(splits, key=lambda s: -len(s.recovered))[:4]
+    lines.append("  examples:")
+    for s in examples:
+        gloss = _SPLIT_KIND_GLOSS.get(s.kind, s.kind)
+        body = (f" — {len(s.recovered)} chars recovered: "
+                f"{s.recovered[:60].strip()!r}" if s.recovered else "")
+        lines.append(f"    [{s.kind}/{s.energy}] {gloss}  ⟨{s.evidence}⟩{body}")
+    lines.append("  → repair with `htmldrill materialize " + sc.local_id +
+                 "` (offline: expand the in-markup bodies as role=continuation "
+                 "fragments; --render-delta: headless diff for post-render blocks)")
+    return "\n".join(lines)
+
+
+def _continuation_blocks(splits: list) -> list[tuple[str, str, str]]:
+    """The offline-recoverable splits → (kind, energy, body) continuation tuples.
+
+    Only splits whose body is ALREADY in the markup (non-empty ``recovered``)
+    become continuation fragments offline — collapsed details, template,
+    noscript. lazy-media keeps only a src reference (no inline body) and
+    virtualized has no inline children, so those are reported by `splits` but not
+    materialized here (they need network/scroll — honestly documented as a limit).
+    """
+    out = []
+    for s in splits:
+        if s.recovered and s.kind in ("collapsed", "deferred"):
+            out.append((s.kind, s.energy, s.recovered))
+    return out
+
+
+def cmd_materialize(ctx: Ctx) -> str:
+    """REPAIR the splits (ESCALATION — never listed in any `requires:`).
+
+    Two modes:
+
+    mode a (DEFAULT, OFFLINE): expand content already in the markup but hidden —
+    collapsed <details> bodies, <template>, <noscript> — and inject each as a
+    docmodel **role=continuation** support fragment (a continuation DocObject
+    carrying a continuation Realization, appended to the model). Records a
+    ``continuation`` layer, the fact MATERIALIZED, and one transition per
+    materialization (each is a confidence-bearing claim in the log). If the model
+    is already built (MODEL_BUILT) the fragments are appended into it; otherwise
+    they are persisted to ``continuation.json`` and folded in when `model` runs.
+
+    mode b (--render-delta, NETWORK + headless): run Chrome with the
+    virtual-time-budget flag, diff the materialized DOM against the plain render
+    snapshot, and record the NEW blocks as continuation fragments with
+    trigger=virtual-time. Clear error if Chrome is absent.
+
+    LIMIT (documented honestly): virtual-time materializes timer/microtask/
+    animation-frame content but NOT scroll-intersection content — infinite-scroll
+    feeds gated on an IntersectionObserver need CDP input events (an explicit
+    scroll step) which this command does not yet drive. Those show up in `splits`
+    as virtualized/lazy-media but are not auto-materialized."""
+    sc = Sidecar(_resolve_id(ctx), work=ctx.work)
+    if not (sc.has(RENDERED) or sc.has(FETCHED)):
+        raise FileNotFoundError(
+            f"no snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` first.")
+
+    if getattr(ctx, "render_delta", False):
+        return _materialize_render_delta(ctx, sc)
+
+    # -- mode a: offline expansion of in-markup hidden bodies --
+    html, source = _rendered_or_static(sc)
+    splits = H.detect_splits(html)
+    frags = _continuation_blocks(splits)
+    # DEDUP: the base model already captures content the stdlib parser reads
+    # statically — a CLOSED <details> body is collapsed in the browser but its
+    # text is right there in the markup, so walk_blocks already has it. Injecting
+    # it again would duplicate paragraphs in the projection. Only genuinely
+    # DEFERRED content (<noscript>/<template>, which walk_blocks skips) is absent
+    # from the base model and worth recovering. Keep a fragment only when its
+    # text is not already in what `model` extracted.
+    base_text = " ".join(" ".join(b.text.split()) for b in H.walk_blocks(html))
+    def _absent_from_base(t: str) -> bool:
+        probe = " ".join(t.split())[:120]
+        return bool(probe) and probe not in base_text
+    frags = [(k, e, t) for (k, e, t) in frags if _absent_from_base(t)]
+    if not frags:
+        # still record the (empty) outcome so the fact/idempotency is honest
+        return (f"{sc.local_id}: nothing to materialize offline — collapsed "
+                f"<details> bodies are already in the {source} model; only "
+                f"<noscript>/<template> deferred content (absent from the base) "
+                f"or --render-delta JS content is recovered here. "
+                f"(run `htmldrill splits {sc.local_id}` to see all splits.)")
+
+    t0 = time.perf_counter()
+    fragments = [{"kind": k, "energy": e, "trigger": "in-markup",
+                  "role": "continuation", "text": t} for k, e, t in frags]
+
+    injected_into_model = False
+    if sc.has(MODEL_BUILT) and sc.has_blob("model.docmodel.json"):
+        injected_into_model = _inject_continuation(sc, fragments)
+
+    # persist the continuation layer regardless (so a later `model` folds it in)
+    sc.write_blob("continuation.json",
+                  json.dumps(fragments, indent=2, ensure_ascii=False))
+    total_chars = sum(len(f["text"]) for f in fragments)
+    cost_ms = (time.perf_counter() - t0) * 1000
+    sc.set_layer("continuation", {"path": "continuation.json",
+                                  "format": "application/json"})
+    sc.set_evidence("materialized_count", len(fragments))
+    sc.set_evidence("materialized_chars", total_chars)
+    sc.set_evidence("materialized_mode", "offline")
+    sc.set_evidence("materialized_into_model", injected_into_model)
+    sc.add_fact(MATERIALIZED)
+    # one confidence-bearing transition PER materialization
+    for f in fragments:
+        sc.log_transition("materialize", _prev(sc, MATERIALIZED), MATERIALIZED,
+                          0, f"continuation[{f['kind']}/{f['energy']}] "
+                             f"{len(f['text'])} chars trigger={f['trigger']}")
+    sc.save()
+    where = ("appended into model.docmodel.json (MODEL_BUILT)"
+             if injected_into_model else
+             "saved to continuation.json — folded in when you run `model`")
+    lines = [f"{sc.local_id}: materialized {len(fragments)} hidden block(s) "
+             f"({total_chars} chars) as role=continuation fragments in {cost_ms:.0f} ms"]
+    for f in fragments:
+        lines.append(f"  + [{f['kind']}/{f['energy']}] {len(f['text'])} chars: "
+                     f"{f['text'][:60].strip()!r}")
+    lines.append(f"  → {where}")
+    lines.append(f"  → {sc.blob_path('continuation.json')}")
+    lines.append("  next: `model` (folds continuation in) · `tiddlers`/`md`/`llmtext`")
+    return "\n".join(lines)
+
+
+def _inject_continuation(sc: Sidecar, fragments: list[dict]) -> bool:
+    """Append each continuation fragment into the persisted docmodel Document as a
+    role=continuation Realization on a continuation DocObject. Returns True on a
+    successful in-place model update. Reuses the same docmodel machinery as
+    `model` (pdfdrill's REAL Document/DocObject/Realization)."""
+    try:
+        from .ingest_dom import ensure_pdfdrill, HTML_STREAM
+        ensure_pdfdrill()
+        from docmodel import Document, DocObject, Realization  # noqa: WPS433
+    except Exception:
+        return False
+    raw = sc.read_blob("model.docmodel.json")
+    if not raw:
+        return False
+    doc = Document.from_dict(json.loads(raw))
+    stream = doc.ensure_stream(HTML_STREAM)
+    base = doc.meta.get("block_count", len(doc.objects))
+    for j, f in enumerate(fragments):
+        # extra anchor for the recovered body + a continuation DocObject carrying a
+        # role=continuation Realization (the pdfdrill continuation-role contract).
+        anchor = stream.append(text=f["text"], type="Continuation",
+                               _line_index=base + j)
+        obj = DocObject(type="Paragraph", props={
+            "flow_index": base + j, "text": f["text"],
+            "continuation": True, "split_kind": f["kind"]})
+        obj.add_realization(Realization(
+            stream=HTML_STREAM, start=anchor, end=anchor, role="continuation"))
+        doc.add(obj)
+    doc.meta["continuation_count"] = len(fragments)
+    sc.write_blob("model.docmodel.json",
+                  json.dumps(doc.to_dict(), indent=2, ensure_ascii=False))
+    return True
+
+
+def _materialize_render_delta(ctx: Ctx, sc: Sidecar) -> str:
+    """mode b: headless render with the virtual-time-budget flag, diff against the
+    plain render snapshot, record NEW post-render blocks as continuation
+    fragments (trigger=virtual-time). Clear error if Chrome is absent."""
+    base_url = _base_url(sc) or sc.get_evidence("url") or ctx.url
+    if not base_url:
+        raise ValueError("no URL recorded for this target — cannot render-delta.")
+    t0 = time.perf_counter()
+    res = R.render_materialize(base_url, timeout=ctx.timeout, window=ctx.window)
+    cost_ms = (time.perf_counter() - t0) * 1000
+    # plain render snapshot for the diff: prefer the captured rendered.html, else
+    # the plain DOM the render_materialize call also produced.
+    plain = sc.read_blob("rendered.html") or res.plain_dom or ""
+    new_blocks = _dom_block_delta(plain, res.dom)
+    sc.write_blob("materialized.html", res.dom)
+    fragments = [{"kind": "deferred", "energy": "virtual-time",
+                  "trigger": "virtual-time", "role": "continuation", "text": t}
+                 for t in new_blocks if t.strip()]
+    injected = False
+    if fragments and sc.has(MODEL_BUILT) and sc.has_blob("model.docmodel.json"):
+        injected = _inject_continuation(sc, fragments)
+    sc.write_blob("continuation.json",
+                  json.dumps(fragments, indent=2, ensure_ascii=False))
+    sc.set_layer("continuation", {"path": "continuation.json",
+                                  "format": "application/json"})
+    sc.set_evidence("materialized_count", len(fragments))
+    sc.set_evidence("materialized_mode", "render-delta")
+    sc.set_evidence("materialized_into_model", injected)
+    sc.set_evidence("render_delta_bytes",
+                    len(res.dom.encode("utf-8", "replace")) -
+                    len(plain.encode("utf-8", "replace")))
+    sc.add_fact(MATERIALIZED)
+    for f in fragments:
+        sc.log_transition("materialize", _prev(sc, MATERIALIZED), MATERIALIZED,
+                          cost_ms, f"continuation[render-delta] {len(f['text'])} "
+                                   f"chars trigger=virtual-time")
+    if not fragments:
+        sc.log_transition("materialize", _prev(sc, MATERIALIZED), MATERIALIZED,
+                          cost_ms, "render-delta: no new post-render blocks")
+    sc.save()
+    delta_bytes = sc.get_evidence("render_delta_bytes", 0)
+    lines = [f"{sc.local_id}: render-delta materialize via "
+             f"{Path(res.chrome).name} in {cost_ms:.0f} ms "
+             f"(Δ{delta_bytes:+d} bytes vs plain render)"]
+    if fragments:
+        lines.append(f"  {len(fragments)} NEW post-render block(s) recorded as "
+                     f"role=continuation (trigger=virtual-time):")
+        for f in fragments[:6]:
+            lines.append(f"    + {len(f['text'])} chars: {f['text'][:60].strip()!r}")
+    else:
+        lines.append("  no NEW blocks appeared after virtual-time render "
+                     "(static markup already complete, or content is scroll-gated).")
+    lines.append("  NOTE: virtual-time covers timer/microtask/raf content; "
+                 "scroll-driven infinite-scroll needs CDP input events (a known limit).")
+    return "\n".join(lines)
+
+
+def _dom_block_delta(plain: str, materialized: str) -> list[str]:
+    """Block-text present in the materialized DOM but absent from the plain render.
+
+    Compares the structural walk of both DOMs; returns the text of blocks the
+    virtual-time render added (timer/raf-injected nodes). Deterministic, offline
+    once both DOMs are in hand."""
+    plain_texts = {b.text.strip() for b in H.walk_blocks(plain) if b.text.strip()}
+    out: list[str] = []
+    for b in H.walk_blocks(materialized):
+        t = b.text.strip()
+        if t and t not in plain_texts and t not in out:
+            out.append(t)
+    return out
+
+
 # -- state / planning / diagnostics ------------------------------------------
 
 def cmd_artifacts(ctx: Ctx) -> str:
@@ -836,6 +1145,8 @@ HANDLERS = {
     "tiddlers": cmd_tiddlers,
     "md": cmd_md,
     "llmtext": cmd_llmtext,
+    "splits": cmd_splits,
+    "materialize": cmd_materialize,
     "artifacts": cmd_artifacts,
     "status": cmd_status,
     "steps": cmd_steps,

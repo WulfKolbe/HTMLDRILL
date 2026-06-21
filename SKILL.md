@@ -109,6 +109,13 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 | `htmldrill md` | Project the docmodel through pdfdrill's LLMCompactProjector; write token-optimized md.md. Records MD_BUILT. |
 | `htmldrill llmtext` | Project the docmodel through pdfdrill's PlainTextProjector; write flat llm.txt. Records LLMTEXT_BUILT. |
 
+### Split recovery (L4)
+
+| Command | Returns |
+|---|---|
+| `htmldrill splits` | Detect split/hidden content (collapsed details, template/noscript, lazy img, content-visibility, role=feed), classified by kind + repair energy. Records SPLITS_KNOWN. |
+| `htmldrill materialize` | Recover hidden content as docmodel role=continuation fragments — offline expands in-markup bodies; --render-delta runs headless virtual-time render and diffs for post-render blocks. Records MATERIALIZED. _(network)_ |
+
 ### State & planning
 
 | Command | Returns |
