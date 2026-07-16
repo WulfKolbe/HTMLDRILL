@@ -118,6 +118,14 @@ def _load_snapshot(ctx: Ctx) -> tuple[Sidecar, str]:
     if not sc.has(FETCHED):
         raise FileNotFoundError(
             f"no fetched snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` first")
+    kind = sc.get_evidence("content_kind", "html")
+    if kind != "html":
+        blob = sc.get_evidence("raw_blob", f"raw.{kind}")
+        raise ValueError(
+            f"the fetched resource is a {kind.upper()}, not HTML "
+            f"({sc.blob_path(blob)}). Snapshot commands need HTML — for a PDF, hand "
+            f"it to pdfdrill (`pdfdrill md {sc.blob_path(blob)}`); for an arXiv URL "
+            f"try `htmldrill arxiv {ctx.url}`.")
     html = sc.read_blob("raw.html") or ""
     return sc, html
 
@@ -141,18 +149,32 @@ def cmd_fetch(ctx: Ctx) -> str:
         return _fetch_report(sc, cached=True)
     t0 = time.perf_counter()
     res = F.fetch(ctx.url, timeout=ctx.timeout, ua=ctx.ua)
-    sc.write_blob("raw.html", res.text)
+    kind = res.kind
+    # Store LOSSLESSLY by kind. Text-decoding a binary body (PDF/zip/image) to
+    # write raw.html replaces every non-utf8 byte with U+FFFD — it destroyed a
+    # 7-page arXiv PDF into 811k replacement chars. HTML → text raw.html; anything
+    # else → raw bytes in raw.<ext>, and the snapshot commands refuse to parse it.
+    if kind == "html":
+        blob = "raw.html"
+        sc.write_blob(blob, res.text)
+        sc.set_layer("raw_html", {"path": blob, "format": "text/html"})
+    else:
+        ext = {"gzip": "tgz"}.get(kind, kind)          # gzip body → .tgz
+        blob = f"raw.{ext}"
+        sc.write_blob_bytes(blob, res.body)            # lossless — no text decode
+        sc.set_layer("raw_blob", {"path": blob, "format": res.content_type or kind})
     sc.write_blob("headers.json", json.dumps(res.headers, indent=2, ensure_ascii=False))
     cost_ms = (time.perf_counter() - t0) * 1000
     sc.set_evidence("url", ctx.url)
     sc.set_evidence("final_url", res.final_url)
     sc.set_evidence("status", res.status)
     sc.set_evidence("content_type", res.content_type)
+    sc.set_evidence("content_kind", kind)
+    sc.set_evidence("raw_blob", blob)
     sc.set_evidence("bytes", len(res.body))
-    sc.set_layer("raw_html", {"path": "raw.html", "format": "text/html"})
     sc.add_fact(FETCHED)
     sc.log_transition("fetch", "INIT", FETCHED, cost_ms,
-                      f"{res.status} {len(res.body)}B {res.content_type}")
+                      f"{res.status} {len(res.body)}B {res.content_type} kind={kind}")
     sc.save()
     return _fetch_report(sc, cached=False)
 
@@ -160,14 +182,28 @@ def cmd_fetch(ctx: Ctx) -> str:
 def _fetch_report(sc: Sidecar, cached: bool) -> str:
     ev = sc.evidence
     tag = "cached" if cached else "fetched"
-    return (f"{tag} {ev.get('url')}\n"
-            f"  id:          {sc.local_id}\n"
-            f"  status:      {ev.get('status')}\n"
-            f"  final url:   {ev.get('final_url')}\n"
-            f"  content-type:{ev.get('content_type')}\n"
-            f"  size:        {ev.get('bytes')} bytes\n"
-            f"  snapshot:    {sc.blob_path('raw.html')}\n"
-            f"  next: meta · links · jsonld · outline · size")
+    kind = ev.get("content_kind", "html")
+    blob = ev.get("raw_blob", "raw.html")
+    lines = [f"{tag} {ev.get('url')}",
+             f"  id:          {sc.local_id}",
+             f"  status:      {ev.get('status')}",
+             f"  final url:   {ev.get('final_url')}",
+             f"  content-type:{ev.get('content_type')}  (kind: {kind})",
+             f"  size:        {ev.get('bytes')} bytes",
+             f"  snapshot:    {sc.blob_path(blob)}"]
+    if kind == "html":
+        lines.append("  next: meta · links · jsonld · outline · size")
+    elif kind == "pdf":
+        lines.append(f"  ⚠ this is a PDF, not HTML — hand it to pdfdrill: "
+                     f"`pdfdrill md {sc.blob_path(blob)}`")
+        aid = K.parse_arxiv_id(ev.get("url") or "")
+        if aid:
+            lines.append(f"    (arXiv {aid} — `htmldrill arxiv {ev.get('url')}` "
+                         f"gives the abstract + the LaTeX-source route)")
+    else:
+        lines.append(f"  ⚠ this is a {kind.upper()}, not HTML — stored raw; "
+                     f"snapshot commands won't parse it")
+    return "\n".join(lines)
 
 
 # -- known-host: arXiv (recognise the source, take the cheapest richest route) --

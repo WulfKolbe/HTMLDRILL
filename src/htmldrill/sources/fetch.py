@@ -80,6 +80,43 @@ def local_id_for(url: str) -> str:
     return f"{slug}-{h}"
 
 
+# magic-byte prefixes for common NON-html binary bodies a URL may return
+_MAGIC = [
+    (b"%PDF-", "pdf"),
+    (b"PK\x03\x04", "zip"),          # zip / docx / xlsx / epub
+    (b"\x89PNG\r\n", "image"),
+    (b"\xff\xd8\xff", "image"),       # jpeg
+    (b"GIF8", "image"),
+    (b"\x1f\x8b", "gzip"),            # arxiv e-print .tgz etc.
+]
+
+
+def content_kind(content_type: str, body: bytes) -> str:
+    """Classify a fetched body as 'html' | 'pdf' | 'image' | 'zip' | 'gzip' |
+    'text' | 'binary' — from the Content-Type first, then magic bytes. This is
+    what stops htmldrill from text-decoding (and DESTROYING) a binary response:
+    an arXiv /pdf URL returns application/pdf, and utf-8-decoding it replaces
+    every non-utf8 byte with U+FFFD, corrupting the PDF beyond use."""
+    ct = (content_type or "").lower()
+    head = body[:8]
+    for magic, kind in _MAGIC:                      # magic bytes are authoritative
+        if head.startswith(magic):
+            return kind
+    if "html" in ct or "xhtml" in ct:
+        return "html"
+    if "pdf" in ct:
+        return "pdf"
+    if ct.startswith("image/"):
+        return "image"
+    if "zip" in ct or "epub" in ct or "officedocument" in ct:
+        return "zip"
+    if ct.startswith("text/") or "xml" in ct or "json" in ct or "javascript" in ct:
+        return "text"
+    # default: assume html only when nothing says otherwise (bare .html files,
+    # servers that omit Content-Type) — the historical behaviour, now the fallback.
+    return "html" if (not ct or "text" in ct) else "binary"
+
+
 class FetchResult:
     def __init__(self, url: str, final_url: str, status: int,
                  headers: dict, body: bytes, content_type: str):
@@ -89,6 +126,11 @@ class FetchResult:
         self.headers = headers
         self.body = body
         self.content_type = content_type
+
+    @property
+    def kind(self) -> str:
+        """'html' | 'pdf' | 'image' | 'zip' | 'gzip' | 'text' | 'binary'."""
+        return content_kind(self.content_type, self.body)
 
     @property
     def text(self) -> str:
