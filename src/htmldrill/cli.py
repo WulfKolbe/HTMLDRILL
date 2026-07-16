@@ -37,6 +37,8 @@ def _ctx(args) -> Ctx:
         timeout=getattr(args, "timeout", F.DEFAULT_TIMEOUT),
         window=getattr(args, "window", "1280,900"),
         engine=getattr(args, "engine", "firefox"),
+        download_pdf=getattr(args, "download_pdf", False),
+        download_source=getattr(args, "download_source", False),
         render_delta=getattr(args, "render_delta", False),
         query=" ".join(getattr(args, "query", None) or []) or None,
         k=getattr(args, "k", 8),
@@ -69,6 +71,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ua", help="override User-Agent")
     p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
     p.set_defaults(cmd="fetch")
+
+    # arxiv — recognise an arXiv URL/id; free metadata + the pdf/source routes
+    p = sub.add_parser("arxiv", help="recognise an arXiv URL/id: free abstract + pdf/source routes")
+    url_arg(p); work_arg(p)
+    p.add_argument("--pdf", dest="download_pdf", action="store_true", help="also download the PDF")
+    p.add_argument("--source", dest="download_source", action="store_true",
+                   help="also download the e-print LaTeX .tgz")
+    p.add_argument("--force", action="store_true", help="re-fetch metadata even if known")
+    p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
+    p.set_defaults(cmd="arxiv")
 
     # snapshot introspection commands (uniform: <url> [--work] [--force] [--ensure])
     SNAP = {

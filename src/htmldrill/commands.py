@@ -29,6 +29,7 @@ from .parse import html as H
 from .sidecar import Sidecar, resolve_local_id, work_root
 from .sources import capture as CAP
 from .sources import fetch as F
+from .sources import known_hosts as K
 from .sources import print_pdf as P
 from .sources import render as R
 
@@ -51,6 +52,8 @@ COMPARED = "COMPARED"
 PRINTED = "PRINTED"
 # L1c (capture — scroll-materialize a real page, then grab DOM + PDF + screenshot)
 CAPTURED = "CAPTURED"
+# L0/known-host (arxiv — recognise the source, take the cheapest richest route)
+ARXIV_KNOWN = "ARXIV_KNOWN"
 # L5 (model)
 MODEL_BUILT = "MODEL_BUILT"
 # L6 (projectors — offline)
@@ -87,6 +90,8 @@ class Ctx:
     model_name: str = ""              # chatlog: the LLM name recorded with the turn
     depth: int = 1                    # crawl: max link depth from the start url
     engine: str = "firefox"           # print: firefox (selenium) | chrome
+    download_pdf: bool = False        # arxiv: also fetch the PDF
+    download_source: bool = False     # arxiv: also fetch the e-print LaTeX .tgz
     max_pages: int = 20               # crawl: hard cap on pages visited
     same_origin: bool = True          # crawl: restrict to same-origin internal links
 
@@ -163,6 +168,71 @@ def _fetch_report(sc: Sidecar, cached: bool) -> str:
             f"  size:        {ev.get('bytes')} bytes\n"
             f"  snapshot:    {sc.blob_path('raw.html')}\n"
             f"  next: meta · links · jsonld · outline · size")
+
+
+# -- known-host: arXiv (recognise the source, take the cheapest richest route) --
+
+def cmd_arxiv(ctx: Ctx) -> str:
+    """Recognise an arXiv URL/id and route it well (NETWORK; never auto-ensured).
+
+    A user often pastes ``arxiv.org/abs/<id>`` not realising it is an HTML landing
+    page, not the paper. This reads title/authors/abstract/category off the abs
+    page for FREE (no render, no capture), and surfaces the two richer routes the
+    page hides: the **PDF** (hand to pdfdrill) and the **e-print .tgz** — the
+    author's LaTeX source, the gold form of every equation.
+
+    ``--pdf`` also downloads the PDF, ``--source`` the e-print tarball, into the
+    sidecar blob dir. Keyed by the canonical arXiv id, so the abs URL, the pdf
+    URL, and the bare id all resolve to one sidecar."""
+    aid = K.parse_arxiv_id(ctx.url or "") or K.bare_arxiv_id(ctx.url or "")
+    if not aid:
+        raise ValueError(f"{ctx.url!r} is not an arXiv URL or id "
+                         f"(expected e.g. https://arxiv.org/abs/2510.11170 or 1706.03762).")
+    lid = "arxiv-" + aid.replace("/", "_")
+    sc = Sidecar(lid, work=ctx.work)
+    urls = K.arxiv_urls(aid)
+    if not (sc.has(ARXIV_KNOWN) and not ctx.force):
+        t0 = time.perf_counter()
+        meta = K.fetch_arxiv_metadata(aid, timeout=ctx.timeout)
+        cost_ms = (time.perf_counter() - t0) * 1000
+        sc.write_blob("arxiv_meta.json", json.dumps(meta, indent=2, ensure_ascii=False))
+        sc.set_evidence("arxiv_id", aid)
+        sc.set_evidence("url", ctx.url)
+        sc.set_evidence("arxiv_urls", urls)
+        sc.set_evidence("title", meta.get("title"))
+        sc.set_evidence("authors", meta.get("authors"))
+        sc.set_evidence("primary_category", meta.get("primary_category"))
+        sc.add_fact(ARXIV_KNOWN)
+        sc.log_transition("arxiv", _prev(sc, ARXIV_KNOWN), ARXIV_KNOWN, cost_ms,
+                          f"{aid} {meta.get('primary_category')}")
+        sc.save()
+    # optional heavier downloads
+    got = []
+    if ctx.download_pdf:
+        p = K.download_arxiv_pdf(aid, sc.blob_dir, timeout=ctx.timeout)
+        sc.set_evidence("pdf_path", str(p)); got.append(f"PDF → {p}")
+    if ctx.download_source:
+        s = K.download_arxiv_source(aid, sc.blob_dir, timeout=ctx.timeout)
+        sc.set_evidence("source_path", str(s)); got.append(f"source → {s}")
+    if got:
+        sc.save()
+
+    meta = json.loads(sc.read_blob("arxiv_meta.json") or "{}")
+    authors = meta.get("authors", [])
+    auth = ", ".join(authors[:4]) + (f" … (+{len(authors) - 4})" if len(authors) > 4 else "")
+    lines = [
+        f"arXiv:{aid}  [{meta.get('primary_category') or '?'}]",
+        f"  title:    {meta.get('title', '')}",
+        f"  authors:  {auth or '(none parsed)'}",
+        f"  abstract: {(meta.get('abstract') or '')[:240]}"
+        + ("…" if len(meta.get('abstract') or '') > 240 else ""),
+        f"  pdf:      {urls['pdf']}",
+        f"  source:   {urls['eprint']}   (author's LaTeX .tgz — gold equations)",
+    ]
+    for g in got:
+        lines.append(f"  downloaded: {g}")
+    lines.append(f"  next: `pdfdrill md {urls['pdf']}` (or `--pdf`/`--source` to cache locally)")
+    return "\n".join(lines)
 
 
 # -- snapshot introspection (no network) -------------------------------------
@@ -1656,6 +1726,7 @@ def cmd_config(ctx: Ctx) -> str:
 # handler registry (name → fn), used by the CLI and the planner's --ensure
 HANDLERS = {
     "fetch": cmd_fetch,
+    "arxiv": cmd_arxiv,
     "size": cmd_size,
     "headers": cmd_headers,
     "meta": cmd_meta,

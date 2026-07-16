@@ -70,6 +70,12 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 |---|---|
 | `htmldrill fetch` | Fetch the URL; snapshot raw HTML + response headers as blobs. Records FETCHED. _(network)_ |
 
+### Known-host routing (network)
+
+| Command | Returns |
+|---|---|
+| `htmldrill arxiv` | Recognise an arXiv URL/id; read title/authors/abstract/category from the abs page for free and surface the pdf + e-print LaTeX routes (--pdf/--source download them). Records ARXIV_KNOWN. _(network)_ |
+
 ### Introspection (snapshot, no render)
 
 | Command | Returns |

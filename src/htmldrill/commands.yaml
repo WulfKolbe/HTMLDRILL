@@ -29,6 +29,13 @@ commands:
     network: true
     done_when: fact:FETCHED
 
+  # -- Known-host routing (network) --
+  - name: arxiv
+    section: Known-host routing (network)
+    summary: Recognise an arXiv URL/id; read title/authors/abstract/category from the abs page for free and surface the pdf + e-print LaTeX routes (--pdf/--source download them). Records ARXIV_KNOWN.
+    network: true
+    done_when: fact:ARXIV_KNOWN
+
   # -- Introspection (snapshot, no render) --
   - name: size
     section: Introspection (snapshot, no render)
