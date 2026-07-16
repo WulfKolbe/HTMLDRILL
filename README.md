@@ -1,8 +1,8 @@
 # HTMLDRILL
 
 A token-economical, shallow-first **drill-down toolkit for HTML / live web
-documents** — a structural twin of [`pdfdrill`](../MX/PDFDRILL) and
-[`chatdrill`](../CHATDRILL). Same sidecar state machine, same L0–L8 stratified
+documents** — a structural twin of [`pdfdrill`](../../PDFDRILL) and
+[`chatdrill`](../../../CHATDRILL). Same sidecar state machine, same L0–L8 stratified
 standoff graph, same `commands.yaml`-as-single-source-of-truth + skillsync drift
 gate. The HTML-specific work lives in the L0–L4 producers (static markup,
 headless render, CSS regions); L5–L8 are shared with the rest of the *drill
