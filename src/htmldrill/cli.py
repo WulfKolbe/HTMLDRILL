@@ -200,6 +200,18 @@ def main(argv: list[str] | None = None) -> int:
                    help="the LLM name recorded with the turn")
     p.set_defaults(cmd="chatlog")
 
+    # capture — scroll-materialize a REAL page, then grab DOM + PDF + screenshot
+    p = sub.add_parser("capture",
+                       help="drive a real browser, scroll to load lazy content, then "
+                            "capture DOM + PDF + screenshot (isolated profile)")
+    url_arg(p); work_arg(p)
+    p.add_argument("--engine", choices=["firefox", "chrome"], default="firefox",
+                   help="firefox = Selenium ephemeral profile (default); chrome = "
+                        "explicit throwaway --user-data-dir. Never the real profile.")
+    p.add_argument("--force", action="store_true", help="re-capture even if CAPTURED")
+    p.add_argument("--timeout", type=float, default=90.0, help="per-page load timeout s")
+    p.set_defaults(cmd="capture")
+
     # print — page -> PDF, then judge the text layer (the pdfdrill bridge)
     p = sub.add_parser("print", help="print the page to PDF and validate its text layer")
     url_arg(p); work_arg(p)

@@ -33,6 +33,7 @@ import base64
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -99,13 +100,21 @@ def print_chrome(url: str, dest: Path, timeout: float = 90.0) -> None:
         raise FileNotFoundError(
             "no Chrome/Chromium found for --engine chrome — set $HTMLDRILL_CHROME, "
             "or use --engine firefox.")
-    cmd = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu",
-           "--run-all-compositor-stages-before-draw",
-           f"--print-to-pdf={dest}", "--print-to-pdf-no-header", _target_url(url)]
-    proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
-    if not dest.exists():
-        raise RuntimeError(f"chrome --print-to-pdf produced nothing "
-                           f"(rc={proc.returncode}): {proc.stderr[:300]!r}")
+    # Isolated throwaway profile — never attach to the user's real Chrome profile
+    # (a second instance on it makes their browser unusable; can corrupt settings).
+    profile = tempfile.mkdtemp(prefix="htmldrill-chrome-")
+    try:
+        cmd = [chrome, "--headless=new", "--no-sandbox", "--disable-gpu",
+               "--no-first-run", "--no-default-browser-check",
+               f"--user-data-dir={profile}",
+               "--run-all-compositor-stages-before-draw",
+               f"--print-to-pdf={dest}", "--print-to-pdf-no-header", _target_url(url)]
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        if not dest.exists():
+            raise RuntimeError(f"chrome --print-to-pdf produced nothing "
+                               f"(rc={proc.returncode}): {proc.stderr[:300]!r}")
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 def to_pdf(url: str, dest: Path, engine: str = "firefox",

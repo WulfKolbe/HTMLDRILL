@@ -47,9 +47,15 @@ def _as_chrome_url(url: str) -> str:
     return norm
 
 
-def _flags() -> list[str]:
+def _flags(profile: str) -> list[str]:
+    # PROFILE ISOLATION (mandatory): without an explicit --user-data-dir, headless
+    # Chrome can attach to the user's REAL profile (~/.config/google-chrome),
+    # which makes their running Chrome unusable and can corrupt their settings.
+    # Every launch gets its own throwaway profile dir, removed by the caller.
     return ["--headless=new", "--no-sandbox", "--disable-gpu",
-            "--hide-scrollbars", "--disable-dev-shm-usage"]
+            "--hide-scrollbars", "--disable-dev-shm-usage",
+            "--no-first-run", "--no-default-browser-check",
+            f"--user-data-dir={profile}"]
 
 
 class RenderResult:
@@ -71,26 +77,31 @@ def render(url: str, timeout: float = 45.0, window: str = "1280,900",
             "(tried: " + ", ".join(_CANDIDATES) + ")")
     target = _as_chrome_url(url)
 
-    dom_cmd = [chrome, *_flags(), f"--window-size={window}", "--dump-dom", target]
-    proc = subprocess.run(dom_cmd, capture_output=True, text=True, timeout=timeout)
-    if proc.returncode != 0 or not proc.stdout:
-        raise RuntimeError(f"chrome --dump-dom failed (rc={proc.returncode}): "
-                           f"{proc.stderr.strip()[:300]}")
-    dom = proc.stdout
+    import tempfile
+    profile = tempfile.mkdtemp(prefix="htmldrill-chrome-")
+    try:
+        dom_cmd = [chrome, *_flags(profile), f"--window-size={window}",
+                   "--dump-dom", target]
+        proc = subprocess.run(dom_cmd, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0 or not proc.stdout:
+            raise RuntimeError(f"chrome --dump-dom failed (rc={proc.returncode}): "
+                               f"{proc.stderr.strip()[:300]}")
+        dom = proc.stdout
 
-    shot: Optional[bytes] = None
-    if screenshot:
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            png = Path(td) / "shot.png"
-            shot_cmd = [chrome, *_flags(), f"--window-size={window}",
-                        f"--screenshot={png}", target]
-            try:
-                subprocess.run(shot_cmd, capture_output=True, timeout=timeout)
-                if png.exists():
-                    shot = png.read_bytes()
-            except Exception:
-                shot = None          # screenshot is best-effort; DOM is the point
+        shot: Optional[bytes] = None
+        if screenshot:
+            with tempfile.TemporaryDirectory() as td:
+                png = Path(td) / "shot.png"
+                shot_cmd = [chrome, *_flags(profile), f"--window-size={window}",
+                            f"--screenshot={png}", target]
+                try:
+                    subprocess.run(shot_cmd, capture_output=True, timeout=timeout)
+                    if png.exists():
+                        shot = png.read_bytes()
+                except Exception:
+                    shot = None      # screenshot is best-effort; DOM is the point
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
 
     return RenderResult(dom=dom, screenshot=shot, chrome=chrome, final_url=target)
 
@@ -133,17 +144,22 @@ def render_materialize(url: str, timeout: float = 45.0,
     target = _as_chrome_url(url)
     size = [f"--window-size={window}"]
 
-    plain_cmd = [chrome, *_flags(), *size, "--dump-dom", target]
-    plain = subprocess.run(plain_cmd, capture_output=True, text=True, timeout=timeout)
-    if plain.returncode != 0 and not plain.stdout:
-        raise RuntimeError(f"chrome plain --dump-dom failed (rc={plain.returncode}): "
-                           f"{plain.stderr.strip()[:300]}")
+    import tempfile
+    profile = tempfile.mkdtemp(prefix="htmldrill-chrome-")
+    try:
+        plain_cmd = [chrome, *_flags(profile), *size, "--dump-dom", target]
+        plain = subprocess.run(plain_cmd, capture_output=True, text=True, timeout=timeout)
+        if plain.returncode != 0 and not plain.stdout:
+            raise RuntimeError(f"chrome plain --dump-dom failed (rc={plain.returncode}): "
+                               f"{plain.stderr.strip()[:300]}")
 
-    vt_cmd = [chrome, *_flags(), *size, *_VIRTUAL_TIME_FLAGS, "--dump-dom", target]
-    vt = subprocess.run(vt_cmd, capture_output=True, text=True, timeout=timeout)
-    if vt.returncode != 0 and not vt.stdout:
-        raise RuntimeError(f"chrome virtual-time --dump-dom failed (rc={vt.returncode}): "
-                           f"{vt.stderr.strip()[:300]}")
+        vt_cmd = [chrome, *_flags(profile), *size, *_VIRTUAL_TIME_FLAGS, "--dump-dom", target]
+        vt = subprocess.run(vt_cmd, capture_output=True, text=True, timeout=timeout)
+        if vt.returncode != 0 and not vt.stdout:
+            raise RuntimeError(f"chrome virtual-time --dump-dom failed (rc={vt.returncode}): "
+                               f"{vt.stderr.strip()[:300]}")
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
 
     return MaterializeResult(dom=vt.stdout, plain_dom=plain.stdout,
                              chrome=chrome, final_url=target)

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Lazy Table</title>
+<style>
+  table{border-collapse:collapse;width:100%} td,th{border:1px solid #ccc;padding:4px}
+  #sentinel{height:40px}
+</style></head>
+<body>
+<h1>Sensor Readings (lazy-loaded)</h1>
+<p>Rows are appended in batches by an IntersectionObserver as you scroll — a
+   naive static capture or a plain print-to-pdf sees only the first batch.</p>
+<table id="t"><thead><tr><th>#</th><th>sensor</th><th>value</th><th>ts</th></tr></thead>
+<tbody id="tb"></tbody></table>
+<div id="sentinel">loading…</div>
+<script>
+const TOTAL = 600, BATCH = 50;
+let loaded = 0;
+const tb = document.getElementById('tb');
+function addBatch(){
+  const end = Math.min(loaded + BATCH, TOTAL);
+  for(let i=loaded; i<end; i++){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i}</td><td>SENSOR_${i}</td><td>${(i*3.14).toFixed(2)}</td><td>2026-07-16T${String(i%24).padStart(2,'0')}:00Z</td>`;
+    tb.appendChild(tr);
+  }
+  loaded = end;
+  document.getElementById('sentinel').textContent =
+    loaded >= TOTAL ? 'ALL_ROWS_LOADED_MARKER' : `loaded ${loaded}/${TOTAL}`;
+}
+addBatch(); // first batch is present on load
+const io = new IntersectionObserver((es)=>{
+  if(es[0].isIntersecting && loaded < TOTAL){ setTimeout(addBatch, 60); }
+});
+io.observe(document.getElementById('sentinel'));
+</script>
+</body></html>

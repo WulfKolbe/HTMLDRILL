@@ -104,6 +104,13 @@ commands:
     summary: static-DOM | rendered-DOM | screenshot fidelity table — surfaces content only present after render.
     done_when: fact:COMPARED
 
+  # -- Capture (network, headless) — scroll-materialize then grab everything --
+  - name: capture
+    section: Capture (headless, network)
+    summary: Drive a real browser, scroll until lazy content loads, then capture the full DOM + a print-to-PDF + a screenshot (isolated profile). Records CAPTURED.
+    network: true
+    done_when: fact:CAPTURED
+
   # -- Print / PDF capture (network) — the htmldrill -> pdfdrill bridge --
   - name: print
     section: Print (headless, network)

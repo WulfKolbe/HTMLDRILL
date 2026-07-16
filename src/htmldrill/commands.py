@@ -27,6 +27,7 @@ from typing import Optional
 from . import planner
 from .parse import html as H
 from .sidecar import Sidecar, resolve_local_id, work_root
+from .sources import capture as CAP
 from .sources import fetch as F
 from .sources import print_pdf as P
 from .sources import render as R
@@ -48,6 +49,8 @@ TEXT_KNOWN = "TEXT_KNOWN"
 COMPARED = "COMPARED"
 # L1b (print — the htmldrill -> pdfdrill bridge)
 PRINTED = "PRINTED"
+# L1c (capture — scroll-materialize a real page, then grab DOM + PDF + screenshot)
+CAPTURED = "CAPTURED"
 # L5 (model)
 MODEL_BUILT = "MODEL_BUILT"
 # L6 (projectors — offline)
@@ -450,12 +453,15 @@ def _render_report(sc: Sidecar, cached: bool) -> str:
 
 
 def _rendered_or_static(sc: Sidecar) -> tuple[str, str]:
-    """(html, source-label) — prefer the rendered DOM, fall back to the static snapshot."""
+    """(html, source-label) — prefer the fully-materialized `capture` DOM (lazy
+    content included), then a one-shot render, then the static snapshot."""
+    if sc.has(CAPTURED) and sc.has_blob("captured.html"):
+        return sc.read_blob("captured.html") or "", "captured"
     if sc.has(RENDERED):
         return sc.read_blob("rendered.html") or "", "rendered"
     if sc.has(FETCHED):
         return sc.read_blob("raw.html") or "", "static"
-    raise FileNotFoundError("nothing captured yet — run `fetch` or `render` first")
+    raise FileNotFoundError("nothing captured yet — run `capture`, `fetch`, or `render` first")
 
 
 def cmd_dom(ctx: Ctx) -> str:
@@ -558,7 +564,7 @@ def cmd_model(ctx: Ctx) -> str:
     commands, it hard-gates on the captured-snapshot fact). Idempotent: skips when
     MODEL_BUILT unless ``--force``."""
     sc = Sidecar(_resolve_id(ctx), work=ctx.work)
-    if not (sc.has(RENDERED) or sc.has(FETCHED)):
+    if not (sc.has(CAPTURED) or sc.has(RENDERED) or sc.has(FETCHED)):
         raise FileNotFoundError(
             f"no snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` "
             f"(or `render`) first; `model` is offline and won't fetch.")
@@ -793,7 +799,7 @@ def cmd_splits(ctx: Ctx) -> str:
     evidence so `materialize` can recover the bodies. Idempotent via the fact /
     --force."""
     sc = Sidecar(_resolve_id(ctx), work=ctx.work)
-    if not (sc.has(RENDERED) or sc.has(FETCHED)):
+    if not (sc.has(CAPTURED) or sc.has(RENDERED) or sc.has(FETCHED)):
         raise FileNotFoundError(
             f"no snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` first; "
             f"`splits` is offline and won't fetch.")
@@ -881,7 +887,7 @@ def cmd_materialize(ctx: Ctx) -> str:
     scroll step) which this command does not yet drive. Those show up in `splits`
     as virtualized/lazy-media but are not auto-materialized."""
     sc = Sidecar(_resolve_id(ctx), work=ctx.work)
-    if not (sc.has(RENDERED) or sc.has(FETCHED)):
+    if not (sc.has(CAPTURED) or sc.has(RENDERED) or sc.has(FETCHED)):
         raise FileNotFoundError(
             f"no snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` first.")
 
@@ -1395,6 +1401,90 @@ def _chatlog_count(log_path: Path) -> int:
         return sum(1 for line in f if line.strip())
 
 
+# -- L1c capture: scroll-materialize a real page, then grab everything --------
+
+def cmd_capture(ctx: Ctx) -> str:
+    """Drive a REAL browser to fully materialize the page (scroll until it stops
+    growing), then capture the loaded DOM + a print-to-PDF + a screenshot
+    (ESCALATION — network + headless; never in any `requires:`).
+
+    This is the "get as much as possible from a URL, today" fallback. Unlike a
+    one-shot render, it recovers lazy content — infinite-scroll feeds and
+    IntersectionObserver-gated tables that a plain capture drops (a 600-row lazy
+    table comes back complete, not truncated to the first 50). The scroll-until-
+    stable rule is general, not tuned to any page.
+
+    Profile isolation is mandatory: the automation browser uses a throwaway
+    profile, never the user's real one, so their running browser is untouched.
+    --engine firefox (default, Selenium ephemeral profile) or chrome (explicit
+    throwaway --user-data-dir). A fresh profile is not logged in, so gated pages
+    yield only their logged-out content for now."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill capture <url> [--engine firefox|chrome]")
+    sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    if sc.has(CAPTURED) and not ctx.force:
+        return _capture_report(sc, cached=True)
+    t0 = time.perf_counter()
+    res = CAP.capture(ctx.url, engine=ctx.engine, page_timeout=ctx.timeout)
+    cost_ms = (time.perf_counter() - t0) * 1000
+
+    sc.write_blob("captured.html", res.dom)
+    pdf_verdict: dict = {}
+    if res.pdf:
+        pdf_path = sc.blob_path("capture.pdf")
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(res.pdf)
+        pdf_verdict = P.validate_text_layer(pdf_path)
+    if res.screenshot:
+        sc.write_blob_bytes("capture.png", res.screenshot)
+
+    c = H.collect(res.dom)
+    tables = res.dom.count("<table") + res.dom.count("<TABLE")
+    sc.set_evidence("url", sc.get_evidence("url") or ctx.url)
+    sc.set_evidence("capture_engine", res.engine)
+    sc.set_evidence("capture_final_url", res.final_url)
+    sc.set_evidence("capture_scroll_rounds", res.rounds)
+    sc.set_evidence("capture_dom_bytes", len(res.dom.encode("utf-8", "replace")))
+    sc.set_evidence("capture_dom_tags", c.tag_count)
+    sc.set_evidence("capture_tables", tables)
+    sc.set_evidence("capture_pdf_bytes", len(res.pdf) if res.pdf else 0)
+    sc.set_evidence("capture_pdf_text_usable", pdf_verdict.get("usable"))
+    sc.set_evidence("capture_profile", res.profile)
+    sc.set_layer("captured_html", {"path": "captured.html", "format": "text/html"})
+    if res.pdf:
+        sc.set_layer("capture_pdf", {"path": "capture.pdf", "format": "application/pdf"})
+    sc.add_fact(CAPTURED)
+    sc.log_transition("capture", _prev(sc, CAPTURED), CAPTURED, cost_ms,
+                      f"{res.engine} {res.rounds} scrolls, {c.tag_count} tags, "
+                      f"{tables} tables, pdf_text={pdf_verdict.get('usable')}")
+    sc.save()
+    return _capture_report(sc, cached=False)
+
+
+def _capture_report(sc: Sidecar, cached: bool) -> str:
+    ev = sc.evidence
+    tag = "cached capture" if cached else "captured"
+    usable = ev.get("capture_pdf_text_usable")
+    mark = {True: "✓", False: "✗", None: "?"}.get(usable, "?")
+    lines = [
+        f"{tag} {ev.get('url')} via {ev.get('capture_engine')} "
+        f"({ev.get('capture_scroll_rounds')} scroll rounds — lazy content materialized)",
+        f"  id:          {sc.local_id}",
+        f"  DOM:         {ev.get('capture_dom_bytes')} bytes, ~{ev.get('capture_dom_tags')} tags, "
+        f"{ev.get('capture_tables')} tables  → {sc.blob_path('captured.html')}",
+        f"  PDF:         {ev.get('capture_pdf_bytes')} bytes, text layer {mark}  "
+        f"→ {sc.blob_path('capture.pdf')}",
+        f"  screenshot:  {sc.blob_path('capture.png') if sc.has_blob('capture.png') else '(none)'}",
+        f"  profile:     {ev.get('capture_profile')}  (isolated — your browser untouched)",
+    ]
+    if usable:
+        lines.append(f"  next: hand the PDF to pdfdrill — `pdfdrill size {sc.blob_path('capture.pdf')}` "
+                     f"— or `model`/`tiddlers` over the captured DOM")
+    else:
+        lines.append(f"  next: `model` over the captured DOM, or OCR the PDF via pdfdrill")
+    return "\n".join(lines)
+
+
 # -- L1b print: the htmldrill -> pdfdrill bridge -----------------------------
 
 def cmd_print(ctx: Ctx) -> str:
@@ -1582,6 +1672,7 @@ HANDLERS = {
     "screenshot": cmd_screenshot,
     "compare": cmd_compare,
     "print": cmd_print,
+    "capture": cmd_capture,
     "model": cmd_model,
     "tiddlers": cmd_tiddlers,
     "md": cmd_md,
