@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from . import planner
 from .parse import html as H
 from .sidecar import Sidecar, resolve_local_id, work_root
 from .sources import fetch as F
+from .sources import print_pdf as P
 from .sources import render as R
 
 # -- facts (module scope) ----------------------------------------------------
@@ -44,6 +46,8 @@ OUTLINE_KNOWN = "OUTLINE_KNOWN"
 RENDERED = "RENDERED"
 TEXT_KNOWN = "TEXT_KNOWN"
 COMPARED = "COMPARED"
+# L1b (print — the htmldrill -> pdfdrill bridge)
+PRINTED = "PRINTED"
 # L5 (model)
 MODEL_BUILT = "MODEL_BUILT"
 # L6 (projectors — offline)
@@ -79,6 +83,7 @@ class Ctx:
     units: Optional[str] = None       # chatlog: comma-separated grounding unit ids
     model_name: str = ""              # chatlog: the LLM name recorded with the turn
     depth: int = 1                    # crawl: max link depth from the start url
+    engine: str = "firefox"           # print: firefox (selenium) | chrome
     max_pages: int = 20               # crawl: hard cap on pages visited
     same_origin: bool = True          # crawl: restrict to same-origin internal links
 
@@ -1390,6 +1395,76 @@ def _chatlog_count(log_path: Path) -> int:
         return sum(1 for line in f if line.strip())
 
 
+# -- L1b print: the htmldrill -> pdfdrill bridge -----------------------------
+
+def cmd_print(ctx: Ctx) -> str:
+    """Print the page to PDF, then JUDGE the text layer (ESCALATION — network +
+    headless; never listed in any `requires:`).
+
+    Makes a web page into a base medium pdfdrill already understands: hand the
+    resulting print.pdf to pdfdrill and its whole tower (text-layer gate, OCR,
+    docmodel, projectors) applies unchanged.
+
+    --engine firefox uses Selenium + geckodriver WebDriver print_page (the
+    standards-based path); --engine chrome uses the headless Chrome `render`
+    already depends on (no extra deps). Measured on real pages the two extract
+    equivalently, so the engine is a fallback lever, not a quality choice — the
+    load-bearing step is the validator, which says whether OCR is actually needed
+    instead of assuming it."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill print <url> [--engine firefox|chrome]")
+    sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    if sc.has(PRINTED) and not ctx.force:
+        return _print_report(sc, cached=True)
+    t0 = time.perf_counter()
+    dest = sc.blob_path("print.pdf")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    engine = P.to_pdf(ctx.url, dest, engine=ctx.engine, timeout=ctx.timeout)
+    cost_ms = (time.perf_counter() - t0) * 1000
+
+    verdict = P.validate_text_layer(dest)
+    sc.set_evidence("url", sc.get_evidence("url") or ctx.url)
+    sc.set_evidence("print_engine", engine)
+    sc.set_evidence("print_bytes", dest.stat().st_size if dest.exists() else 0)
+    sc.set_evidence("print_text_usable", verdict.get("usable"))
+    sc.set_evidence("print_text_verdict", verdict.get("verdict"))
+    sc.set_evidence("print_text_stats", {k: verdict[k] for k in
+                                         ("chars", "letters", "words", "letter_ratio")
+                                         if k in verdict})
+    sc.set_layer("print_pdf", {"path": "print.pdf", "format": "application/pdf",
+                               "engine": engine})
+    sc.add_fact(PRINTED)
+    sc.log_transition("print", _prev(sc, PRINTED), PRINTED, cost_ms,
+                      f"{engine} {sc.get_evidence('print_bytes')}B "
+                      f"text_usable={verdict.get('usable')}")
+    sc.save()
+    return _print_report(sc, cached=False)
+
+
+def _print_report(sc: Sidecar, cached: bool) -> str:
+    ev = sc.evidence
+    tag = "cached print" if cached else "printed"
+    stats = ev.get("print_text_stats") or {}
+    usable = ev.get("print_text_usable")
+    mark = {True: "✓", False: "✗", None: "?"}.get(usable, "?")
+    lines = [f"{tag} {ev.get('url')} via {ev.get('print_engine')}",
+             f"  id:        {sc.local_id}",
+             f"  pdf:       {ev.get('print_bytes')} bytes → {sc.blob_path('print.pdf')}",
+             f"  text layer:{mark} {ev.get('print_text_verdict')}"]
+    if stats:
+        lines.append(f"             {stats.get('words')} words, "
+                     f"{stats.get('chars')} chars, "
+                     f"letter-ratio {stats.get('letter_ratio')}")
+    # The point of the bridge: say what to do with the PDF next.
+    if usable:
+        lines.append(f"  next: hand to pdfdrill — `pdfdrill size {sc.blob_path('print.pdf')}` "
+                     f"(its text-layer gate will agree), then md/tiddlers")
+    else:
+        lines.append(f"  next: pdfdrill will OCR it — `pdfdrill size {sc.blob_path('print.pdf')}` "
+                     f"then `pdfdrill ocr …` (don't OCR what doesn't need it)")
+    return "\n".join(lines)
+
+
 # -- state / planning / diagnostics ------------------------------------------
 
 def cmd_artifacts(ctx: Ctx) -> str:
@@ -1455,11 +1530,25 @@ def cmd_doctor(ctx: Ctx) -> str:
     chrome = R.find_chrome()
     checks.append(("headless chrome (M1 render)", bool(chrome),
                    chrome or "none — set $HTMLDRILL_CHROME (L0 still works without it)"))
+    gecko = P.find_geckodriver()
+    checks.append(("geckodriver (print --engine firefox)", bool(gecko),
+                   gecko or "none — optional; `print --engine chrome` needs no driver"))
+    try:
+        import selenium  # noqa: F401
+        _sel = True
+    except Exception:
+        _sel = False
+    checks.append(("selenium (print --engine firefox)", _sel,
+                   "ok" if _sel else "pip install selenium — optional"))
+    checks.append(("pdftotext (print text-layer validator)", bool(shutil.which("pdftotext")),
+                   shutil.which("pdftotext") or "none — install poppler-utils"))
     lines = ["htmldrill doctor:"]
     for name, ok, detail in checks:
         lines.append(f"  [{'✓' if ok else '✗'}] {name:<32} {detail}")
     # Chrome is optional (L0 needs none); don't let its absence fail the verdict.
-    ok_all = all(ok for name, ok, _ in checks if "chrome" not in name)
+    _optional = ("chrome", "geckodriver", "selenium", "pdftotext")
+    ok_all = all(ok for name, ok, _ in checks
+                 if not any(o in name for o in _optional))
     lines.append("  → all systems go." if ok_all else "  → fix the ✗ items above.")
     return "\n".join(lines)
 
@@ -1492,6 +1581,7 @@ HANDLERS = {
     "text": cmd_text,
     "screenshot": cmd_screenshot,
     "compare": cmd_compare,
+    "print": cmd_print,
     "model": cmd_model,
     "tiddlers": cmd_tiddlers,
     "md": cmd_md,

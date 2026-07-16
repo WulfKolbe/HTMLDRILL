@@ -95,6 +95,12 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 | `htmldrill screenshot` | Report the captured screenshot path and size (produced by render). |
 | `htmldrill compare` | static-DOM \| rendered-DOM \| screenshot fidelity table — surfaces content only present after render. |
 
+### Print (headless, network)
+
+| Command | Returns |
+|---|---|
+| `htmldrill print` | Print the page to PDF (--engine firefox\|chrome) and validate the text layer, so pdfdrill can take over. Records PRINTED. _(network)_ |
+
 ### Model (offline)
 
 | Command | Returns |

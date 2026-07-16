@@ -26,6 +26,9 @@ Render (headless, network):
   htmldrill screenshot                        Report the captured screenshot path and size (produced by render).
   htmldrill compare                           static-DOM | rendered-DOM | screenshot fidelity table — surfaces content only present after render.
 
+Print (headless, network):
+  htmldrill print                             Print the page to PDF (--engine firefox|chrome) and validate the text layer, so pdfdrill can take over. Records PRINTED.
+
 Model (offline):
   htmldrill model                             Build a shared docmodel Document from the captured DOM (offline; needs a prior fetch/render). Records MODEL_BUILT.
 

@@ -36,6 +36,7 @@ def _ctx(args) -> Ctx:
         ua=getattr(args, "ua", None),
         timeout=getattr(args, "timeout", F.DEFAULT_TIMEOUT),
         window=getattr(args, "window", "1280,900"),
+        engine=getattr(args, "engine", "firefox"),
         render_delta=getattr(args, "render_delta", False),
         query=" ".join(getattr(args, "query", None) or []) or None,
         k=getattr(args, "k", 8),
@@ -198,6 +199,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", dest="model_name", default="",
                    help="the LLM name recorded with the turn")
     p.set_defaults(cmd="chatlog")
+
+    # print — page -> PDF, then judge the text layer (the pdfdrill bridge)
+    p = sub.add_parser("print", help="print the page to PDF and validate its text layer")
+    url_arg(p); work_arg(p)
+    p.add_argument("--engine", choices=["firefox", "chrome"], default="firefox",
+                   help="firefox = Selenium+geckodriver WebDriver print (default); "
+                        "chrome = headless --print-to-pdf (no extra deps)")
+    p.add_argument("--force", action="store_true", help="re-print even if PRINTED")
+    p.add_argument("--timeout", type=float, default=90.0)
+    p.set_defaults(cmd="print")
 
     # artifacts / status — state views
     p = sub.add_parser("artifacts", help="list the blobs captured for this target")

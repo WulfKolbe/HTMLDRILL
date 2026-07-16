@@ -40,9 +40,34 @@ The **killer case**: `htmldrill links` surfaces URLs that exist in the raw marku
 never appear as a visible `<a href>` anchor — the HTML analog of pdfdrill reading
 invisible links out of a PDF's annotation layer.
 
+## The pdfdrill bridge: `print`
+
+`htmldrill print <url>` renders a page to PDF, then **judges whether the text
+layer is actually usable** — turning a web page into a base medium pdfdrill's
+whole tower already understands:
+
+```bash
+./htmldrill print https://example.com            # --engine firefox (default)
+./htmldrill print https://example.com --engine chrome
+# → "text layer:✓ extractable — no OCR needed"
+# → hand it over:  pdfdrill size <…>/print.pdf
+```
+
+Two engines: **firefox** (Selenium + geckodriver `print_page()`; needs the
+optional `selenium` package + a geckodriver binary) and **chrome**
+(`--print-to-pdf` via the headless Chrome `render` already uses; no extra deps).
+
+*Measured, not assumed:* the engines extract equivalently on real pages —
+python.org (387 vs 389 words, letter-ratio 0.812/0.813) and a math-heavy formula
+report (1165 vs 1212 words, ratio 0.522/0.522). So the engine is a fallback lever
+for pages that misbehave, not a quality choice. The load-bearing step is the
+**validator**: print, then *check*, and escalate to OCR only when the check fails
+— never "always OCR everything".
+
 ## Status
 
-**M0 — scaffold + L0 free tier (current).** Fetch + 14 introspection/diagnostic
-commands, all zero-render. Roadmap: M1 headless render gate · M2 DOM/region
-producers + `ingest_dom` → shared `Document` · M3 the projector payoff
-(`tiddlers`/`md`/`report`/`semantic` over HTML, reusing pdfdrill's `docops`).
+**M0–M5 complete.** 31 commands: L0 free tier · M1 headless render gate · M2
+`ingest_dom` → shared `Document` · M3 projector payoff (`tiddlers`/`md`/`llmtext`
+via pdfdrill's own `docops`) · M4 split-recovery (`splits`/`materialize`) · M5
+bounded `crawl` + `retrieve`/`chatlog` + `drillui --tool htmldrill` · plus the
+`print` bridge. 59 tests, real-corpus hardened; CI enforces manifest↔HANDLERS.
