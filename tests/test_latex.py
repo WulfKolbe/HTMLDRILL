@@ -79,6 +79,62 @@ def test_serializer_is_dependency_free():
     assert html.index("Intro") < html.index("Hello") < html.index("one") < html.index("<table>")
 
 
+#: a real 1×1 transparent PNG — decodes to valid bytes, no ImageMagick needed
+_PNG_1x1 = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+
+def test_asset_extractor_writes_files_and_drops_remote():
+    """data: images become on-disk files (no data: in the HTML, path emitted);
+    remote/relative srcs can't be resolved offline → dropped to caption-only.
+    Dependency-free: PNG is a direct format, so no ImageMagick is required."""
+    from htmldrill.project_latex import document_to_html, make_extractor
+    with tempfile.TemporaryDirectory() as d:
+        assets = Path(d) / "tex-assets"
+        doc = _Doc([_Obj("f", "Picture", {
+            "flow_index": 0, "src": f"data:image/png;base64,{_PNG_1x1}",
+            "caption": "a pic"})], {"title": "T"})
+        ex = make_extractor(assets)
+        html = document_to_html(doc, extractor=ex)
+        assert "data:" not in html, "a raw data: URI leaked into the HTML/LaTeX"
+        assert "tex-assets/img001.png" in html
+        assert ex.embedded == 1 and ex.dropped == []
+        assert (assets / "img001.png").exists() and (assets / "img001.png").stat().st_size > 0
+
+        # remote src: dropped to a caption-only figure (offline can't fetch it)
+        doc2 = _Doc([_Obj("f", "Picture", {
+            "flow_index": 0, "src": "https://example.com/y.png",
+            "caption": "remote"})], {"title": "T"})
+        ex2 = make_extractor(Path(d) / "a2")
+        html2 = document_to_html(doc2, extractor=ex2)
+        assert "<img" not in html2 and "remote" in html2
+        assert ex2.embedded == 0 and len(ex2.dropped) == 1
+
+
+def test_renovate_modernizes_output():
+    """The renovation pass kills \\par terminators, ungludes environments,
+    modernizes the preamble, and is idempotent — without dropping content."""
+    from htmldrill.latex_renovate import renovate
+    raw = ("\\documentclass{article}\n\\usepackage{graphicx}\n\\begin{document}\n"
+           "\\section{T}\n\\begin{figure}\n\\includegraphics{a.png}\n"
+           "\\caption{c}\n\\end{figure}Body text here\\par\nSecond para\\par\n"
+           "\\end{document}\n")
+    out = renovate(raw)
+    # no bare \par terminators survive (but \paragraph-like macros would be safe)
+    import re as _re
+    assert not _re.search(r"\\par(?![a-zA-Z])", out), "a \\par terminator survived"
+    # environment end no longer glued to following prose
+    assert "\\end{figure}Body" not in out and "\\end{figure}\n" in out
+    # content preserved
+    assert "Body text here" in out and "Second para" in out
+    # preamble modernized + engine-adaptive Unicode handling
+    assert "\\documentclass[11pt]{article}" in out
+    assert "\\ifpdftex" in out and "inputenc" in out
+    assert "\\usepackage{graphicx}" in out            # html2latex's own pkg kept
+    # idempotent: renovating again changes nothing
+    assert renovate(out) == out
+
+
 def test_serializer_escapes_content():
     """Model text can never inject markup — angle brackets are escaped."""
     doc = _Doc([_Obj("p", "Paragraph", {"flow_index": 0, "text": "a < b & c > d"})],
@@ -110,6 +166,8 @@ def test_latex_projects_model_to_tex():
         assert "\\end{document}" in tex
         # the fixture's headings survive into sectioning commands
         assert "Main Title" in tex
+        # NO raw data: URI may survive in \includegraphics — that wouldn't compile
+        assert "data:image" not in tex, "a base64 data URI leaked into out.tex"
 
 
 def test_latex_missing_dep_is_actionable():

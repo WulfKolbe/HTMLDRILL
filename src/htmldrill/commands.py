@@ -923,25 +923,44 @@ def cmd_latex(ctx: Ctx) -> str:
             f"`pip install 'git+https://github.com/pankaj28843/html2latex'` "
             f"(it also needs justhtml<2 for the current adapter)."
         ) from e
-    from .project_latex import document_to_html
+    from .project_latex import document_to_html, make_extractor
 
-    html = document_to_html(doc)
+    # data: images in single.html must become real files on disk, or
+    # \includegraphics won't compile — extract them beside out.tex. Clear any
+    # stale assets from a prior build so counts and files stay in sync.
+    assets_dir = sc.blob_dir / "tex-assets"
+    if assets_dir.exists():
+        shutil.rmtree(assets_dir, ignore_errors=True)
+    extractor = make_extractor(assets_dir)
+
+    html = document_to_html(doc, extractor=extractor)
     t0 = time.perf_counter()
-    tex = _h2l.render(html)
+    raw_tex = _h2l.render(html)
     cost_ms = (time.perf_counter() - t0) * 1000
-    if not isinstance(tex, str):
-        tex = tex.decode("utf-8") if isinstance(tex, bytes) else str(tex)
+    if not isinstance(raw_tex, str):
+        raw_tex = raw_tex.decode("utf-8") if isinstance(raw_tex, bytes) else str(raw_tex)
+
+    # Renovate html2latex's dated output (\par terminators, bare preamble, glued
+    # environments) into idiomatic modern LaTeX. Purely textual + idempotent.
+    from .latex_renovate import renovate
+    tex = renovate(raw_tex)
 
     sc.write_blob("out.tex", tex)
     by_type: dict[str, int] = {}
     for o in doc.objects.values():
         by_type[o.type] = by_type.get(o.type, 0) + 1
+    pars_removed = len(re.findall(r"\\par(?![a-zA-Z])", raw_tex))
     sc.set_evidence("latex_bytes", len(tex.encode("utf-8", "replace")))
     sc.set_evidence("latex_objects_by_type", by_type)
+    sc.set_evidence("latex_images_embedded", extractor.embedded)
+    sc.set_evidence("latex_images_dropped", len(extractor.dropped))
+    sc.set_evidence("latex_renovated", True)
+    sc.set_evidence("latex_pars_removed", pars_removed)
     sc.set_layer("latex", {"path": "out.tex", "format": "application/x-tex"})
     sc.add_fact(LATEX_BUILT)
     sc.log_transition("latex", _prev(sc, LATEX_BUILT), LATEX_BUILT, cost_ms,
-                      f"html2latex → out.tex ({len(tex)} chars) from {by_type}")
+                      f"html2latex → out.tex ({len(tex)} chars) from {by_type}; "
+                      f"{extractor.embedded} images embedded, {len(extractor.dropped)} dropped")
     sc.save()
     return _latex_report(sc, cached=False)
 
@@ -958,8 +977,16 @@ def _latex_report(sc: Sidecar, cached: bool) -> str:
     if by_type:
         lines.append("  projected objects: " +
                      ", ".join(f"{t}×{n}" for t, n in sorted(by_type.items())))
-    lines.append("  next: compile with `pdflatex out.tex` "
-                 "(inline math/emphasis is plain — see the spec's fidelity note)")
+    emb = ev.get("latex_images_embedded")
+    if emb is not None:
+        drp = ev.get("latex_images_dropped", 0)
+        lines.append(f"  images:      {emb} embedded → {sc.blob_path('tex-assets')}/"
+                     + (f"  ({drp} unresolved offline, dropped to captions)" if drp else ""))
+    if ev.get("latex_renovated"):
+        lines.append(f"  renovated:   modern preamble + {ev.get('latex_pars_removed', 0)} "
+                     f"archaic \\par terminators → blank-line paragraphs")
+    lines.append("  next: compile with `xelatex out.tex` (Unicode-safe — web text "
+                 "carries glyphs pdflatex needs a preamble for; data: images are files)")
     return "\n".join(lines)
 
 
