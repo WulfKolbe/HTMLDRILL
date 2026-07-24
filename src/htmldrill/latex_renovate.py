@@ -30,7 +30,14 @@ _BLOCK_ENVS = (
 _ENVS_RE = "|".join(_BLOCK_ENVS)
 
 
-def _upgrade_preamble(preamble: str) -> str:
+#: settings for the wrapping code listing (verbatim overflows the page on a long
+#: single line — a collapsed BibTeX box is exactly that).
+_LSTSET = ("\\lstset{basicstyle=\\ttfamily\\small,breaklines=true,"
+           "breakatwhitespace=false,columns=fullflexible,keepspaces=true,"
+           "showstringspaces=false,frame=single,xleftmargin=0pt}")
+
+
+def _upgrade_preamble(preamble: str, needs_listings: bool = False) -> str:
     """Modernize the documentclass line and inject a current package set, keeping
     any packages html2latex already emitted."""
     preamble = re.sub(r"\\documentclass(?:\[[^\]]*\])?\{article\}",
@@ -51,6 +58,9 @@ def _upgrade_preamble(preamble: str) -> str:
                       ("hyperref", "\\usepackage[hidelinks]{hyperref}")):
         if pkg not in present:
             inject.append(line)
+    if needs_listings and "listings" not in present:
+        inject.append("\\usepackage{listings}")
+        inject.append(_LSTSET)
 
     # already modernized? (idempotent) — bail if our marker is present
     if "modernized by htmldrill" in preamble:
@@ -81,13 +91,33 @@ def _renovate_body(body: str) -> str:
     return body
 
 
+#: verbatim (html2latex's <pre> output) OR an already-converted lstlisting
+_CODE_RE = re.compile(r"\\begin\{(verbatim|lstlisting)\}(.*?)\\end\{\1\}", re.S)
+
+
 def renovate(tex: str) -> str:
     """Return a modernized copy of an html2latex document. Idempotent."""
     m = re.search(r"\\begin\{document\}", tex)
     if m:
         preamble, body = tex[:m.start()], tex[m.start():]
-        preamble = _upgrade_preamble(preamble)
     else:                                   # a fragment — body only
         preamble, body = "", tex
+
+    # Protect code/verbatim content from the whitespace transforms (they'd mangle
+    # code formatting), then re-emit as a wrapping lstlisting so a long single-line
+    # box — a collapsed BibTeX entry — doesn't overflow the page.
+    blocks: list[str] = []
+
+    def _stash(mm: "re.Match") -> str:
+        blocks.append(mm.group(2).strip("\n"))
+        return f"\n\n@@HTMLDRILL_CODE_{len(blocks) - 1}@@\n\n"
+
+    body = _CODE_RE.sub(_stash, body)
     body = _renovate_body(body)
+    for i, content in enumerate(blocks):
+        listing = "\\begin{lstlisting}\n" + content + "\n\\end{lstlisting}"
+        body = body.replace(f"@@HTMLDRILL_CODE_{i}@@", listing)
+
+    if m:
+        preamble = _upgrade_preamble(preamble, needs_listings=bool(blocks))
     return (preamble + body).strip() + "\n"

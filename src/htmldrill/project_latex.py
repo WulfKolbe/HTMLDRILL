@@ -225,6 +225,10 @@ def document_to_html(doc, extractor: Optional[_AssetExtractor] = None) -> str:
             parts.append(html or (f"<p>{escape(text)}</p>" if text else ""))
         elif otype in ("Picture", "Figure"):
             parts.append(_figure_html(props, extractor))
+        elif props.get("code_block") and text:
+            # <pre> → html2latex verbatim (content NOT escaped) — a BibTeX/code box
+            # renders as code, not a wall of \{ \textbackslash{} \$ garbage.
+            parts.append(f"<pre>{escape(text)}</pre>")
         elif text:                       # Paragraph and any other prose object
             parts.append(f"<p>{escape(text)}</p>")
     flush_list()

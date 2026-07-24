@@ -76,6 +76,12 @@ def _props_for(block: H.Block, flow_index: int) -> dict:
         p["href"] = block.props.get("href", "")
     elif t == "Table":
         p["rows"] = block.props.get("rows", [])
+    elif t == "CodeBlock":
+        # CodeBlock has no downstream object type (it maps to Paragraph), but the
+        # code-ness is load-bearing for LaTeX: a <pre>/<code> body (e.g. a BibTeX
+        # "cite this" box) must render VERBATIM, not as escaped prose. Carry the
+        # signal so project_latex can emit <pre> instead of <p>.
+        p["code_block"] = True
     return p
 
 

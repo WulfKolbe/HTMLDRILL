@@ -135,6 +135,39 @@ def test_renovate_modernizes_output():
     assert renovate(out) == out
 
 
+def test_code_block_renders_verbatim_not_escaped():
+    """A code_block Paragraph (a <pre>/<code> body, e.g. a BibTeX box) must emit
+    <pre> so html2latex renders it verbatim — NOT escaped prose."""
+    from htmldrill.project_latex import document_to_html
+    bib = "@misc{x2026, title={{T}}, note=$\\sim$99\\%}"
+    doc = _Doc([_Obj("c", "Paragraph",
+                     {"flow_index": 0, "text": bib, "code_block": True})],
+               {"title": "D"})
+    html = document_to_html(doc)
+    assert f"<pre>" in html and "</pre>" in html
+    assert "<p>@misc" not in html                 # NOT a normal paragraph
+    # a plain paragraph with the same text WOULD be a <p>
+    doc2 = _Doc([_Obj("p", "Paragraph", {"flow_index": 0, "text": bib})], {"title": "D"})
+    assert "<pre>" not in document_to_html(doc2)
+
+
+def test_renovate_wraps_code_in_lstlisting():
+    """The renovation converts html2latex verbatim → wrapping lstlisting, adds the
+    listings package, keeps code content byte-for-byte, and stays idempotent."""
+    from htmldrill.latex_renovate import renovate
+    raw = ("\\documentclass{article}\n\\begin{document}\n"
+           "Intro para\\par\n"
+           "\\begin{verbatim}@misc{x, title={{T}}, note=$\\sim$99\\%}\\end{verbatim}\n"
+           "\\end{document}\n")
+    out = renovate(raw)
+    assert "\\begin{lstlisting}" in out and "\\begin{verbatim}" not in out
+    assert "\\usepackage{listings}" in out and "\\lstset{" in out
+    # code content survives unescaped and intact
+    assert "@misc{x, title={{T}}, note=$\\sim$99\\%}" in out
+    # the whitespace transforms did NOT touch inside the code block
+    assert renovate(out) == out                    # idempotent
+
+
 def test_serializer_escapes_content():
     """Model text can never inject markup — angle brackets are escaped."""
     doc = _Doc([_Obj("p", "Paragraph", {"flow_index": 0, "text": "a < b & c > d"})],
