@@ -135,6 +135,38 @@ def test_renovate_modernizes_output():
     assert renovate(out) == out
 
 
+def test_list_item_preserves_id_title_links():
+    """A structured <li> (bibliography entry) keeps its id (citation key),
+    <span class=title>, and <a href> URL as props — not just flattened text."""
+    from htmldrill.parse import html as H
+    li = ('<ol><li id="paulo2025transcoders">'
+          '<span class="title">Transcoders Beat SAEs</span> '
+          '<a href="https://arxiv.org/pdf/2501.18823">[link]</a><br>'
+          'Paulo, G., 2025. arXiv:2501.18823.</li></ol>')
+    items = [b for b in H.walk_blocks(li) if b.type == "ListItem"]
+    assert len(items) == 1
+    p = items[0].props
+    assert p.get("id") == "paulo2025transcoders"
+    assert p.get("title") == "Transcoders Beat SAEs"
+    assert p.get("links") == ["https://arxiv.org/pdf/2501.18823"]
+    # the flattened body text is still there too (title folds in, nothing lost)
+    assert "Transcoders Beat SAEs" in items[0].text and "Paulo" in items[0].text
+
+
+def test_list_item_link_url_reaches_latex():
+    """The projector re-attaches a preserved link URL that the flat text lost
+    (only '[link]' survived), so the real URL reaches the LaTeX."""
+    from htmldrill.project_latex import document_to_html
+    doc = _Doc([_Obj("l", "ListItem", {
+        "flow_index": 0, "text": "Title [link] Author 2025",
+        "links": ["https://arxiv.org/pdf/2501.18823"]})], {"title": "D"})
+    html = document_to_html(doc)
+    assert 'href="https://arxiv.org/pdf/2501.18823"' in html
+    if _have("html2latex"):
+        import html2latex as h2l
+        assert "arxiv.org/pdf/2501.18823" in h2l.html2latex(html)
+
+
 def test_dmath_block_parsed_as_equation():
     """<d-math block> is captured as a standalone Equation block carrying the gold
     TeX; inline <d-math> is (for now) folded into the surrounding prose."""

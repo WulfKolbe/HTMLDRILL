@@ -76,6 +76,12 @@ def _props_for(block: H.Block, flow_index: int) -> dict:
         p["href"] = block.props.get("href", "")
     elif t == "Table":
         p["rows"] = block.props.get("rows", [])
+    elif t == "ListItem":
+        # structured list items (e.g. bibliography entries) carry an id (the
+        # citation key), a title, and link URLs — preserve them, not just text.
+        for k in ("id", "title", "links"):
+            if block.props.get(k):
+                p[k] = block.props[k]
     elif t == "CodeBlock":
         # CodeBlock has no downstream object type (it maps to Paragraph), but the
         # code-ness is load-bearing for LaTeX: a <pre>/<code> body (e.g. a BibTeX

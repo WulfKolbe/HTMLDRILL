@@ -196,12 +196,22 @@ def document_to_html(doc, extractor: Optional[_AssetExtractor] = None) -> str:
     """
     objs = sorted(_objects(doc), key=_flow_key)
     parts: list[str] = []
-    list_buffer: list[str] = []
+    list_buffer: list = []
 
     def flush_list() -> None:
         if list_buffer:
-            items = "".join(f"<li>{escape(t)}</li>" for t in list_buffer)
-            parts.append(f"<ul>{items}</ul>")
+            lis = []
+            for obj in list_buffer:
+                p = getattr(obj, "props", {}) or {}
+                body = escape(_text_of(obj))
+                # a preserved link URL that the flattened text lost (only "[link]"
+                # survived) — re-attach it as a real anchor so it reaches the LaTeX
+                for url in p.get("links") or []:
+                    if url and url not in body:
+                        body += (f' <a href="{escape(str(url), quote=True)}">'
+                                 f'{escape(str(url))}</a>')
+                lis.append(f"<li>{body}</li>")
+            parts.append(f"<ul>{''.join(lis)}</ul>")
             list_buffer.clear()
 
     for o in objs:
@@ -211,7 +221,7 @@ def document_to_html(doc, extractor: Optional[_AssetExtractor] = None) -> str:
 
         if otype == "ListItem":
             if text:
-                list_buffer.append(text)
+                list_buffer.append(o)          # keep the object for its props
             continue
         flush_list()
 

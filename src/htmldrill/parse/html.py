@@ -334,6 +334,10 @@ class _StructuralWalker(HTMLParser):
         self._table_rows: list[list[str]] = []
         self._cur_row: Optional[list[str]] = None
         self._in_table = 0
+        # sub-capture: a nested field (e.g. <span class="title">) whose text we
+        # want as its own prop while it ALSO flows into the block's flat text.
+        self._subcap: Optional[str] = None
+        self._subcap_buf: list[str] = []
 
     # -- loose flow text (generic <div>/<span>/text-node content) --
     def _flush_flow(self) -> None:
@@ -390,6 +394,18 @@ class _StructuralWalker(HTMLParser):
             self._cur_row = []
             return
 
+        # Structure enrichment while capturing a <li> (e.g. a bibliography entry):
+        # keep its <a href> URLs and its <span class="title"> as props, not only
+        # the flattened text — else a reference's link URL and title are lost.
+        if self._cap_type == "ListItem":
+            if tag == "a" and a.get("href"):
+                self._cap_props.setdefault("links", []).append(a["href"])
+                return
+            if tag == "span" and "title" in a.get("class", "").split():
+                self._subcap = "title"
+                self._subcap_buf = []
+                return
+
         # DOM-native display math (Distill <d-math block>): capture the inner TeX
         # as a standalone Equation block, so it projects as real \[...\] math
         # rather than being flattened into prose and escaped. Inline <d-math>
@@ -403,6 +419,10 @@ class _StructuralWalker(HTMLParser):
             btype = _BLOCK_TEXT_TAGS.get(tag, "Paragraph")
             if tag in _HEADINGS:
                 self._open(tag, "Heading", {"level": int(tag[1])})
+            elif tag == "li" and a.get("id"):
+                # a list item's id is load-bearing — a bibliography <li> carries
+                # the citation key there (e.g. id="paulo2025transcoders").
+                self._open(tag, btype, {"id": a["id"]})
             else:
                 self._open(tag, btype)
             return
@@ -439,6 +459,8 @@ class _StructuralWalker(HTMLParser):
             return
         if self._cap_type is not None:
             self._cap_buf.append(data)
+            if self._subcap is not None:      # also feed the active sub-field
+                self._subcap_buf.append(data)
         elif self._in_table and self._cur_row is not None:
             # loose text directly inside a <tr> (rare) — ignore; cells handle it
             return
@@ -446,6 +468,11 @@ class _StructuralWalker(HTMLParser):
             self._flow_buf.append(data)
 
     def handle_endtag(self, tag):
+        if self._subcap is not None and tag == "span":
+            self._cap_props[self._subcap] = " ".join("".join(self._subcap_buf).split())
+            self._subcap = None
+            self._subcap_buf = []
+            return
         if tag in _SKIP_STRUCTURAL:
             if self._skip_depth:
                 self._skip_depth -= 1
