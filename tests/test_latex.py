@@ -135,6 +135,39 @@ def test_renovate_modernizes_output():
     assert renovate(out) == out
 
 
+def test_dmath_block_parsed_as_equation():
+    """<d-math block> is captured as a standalone Equation block carrying the gold
+    TeX; inline <d-math> is (for now) folded into the surrounding prose."""
+    from htmldrill.parse import html as H
+    snippet = ("<p>rows of <d-math>W_U J_\\ell</d-math> here</p>"
+               "<d-math block> J_\\ell = \\mathbb{E}[x] </d-math>")
+    blocks = H.walk_blocks(snippet)
+    eqs = [b for b in blocks if b.type == "Equation"]
+    assert len(eqs) == 1, [(b.type, b.text) for b in blocks]
+    assert eqs[0].text == "J_\\ell = \\mathbb{E}[x]"
+    # inline d-math TeX still rides along in the paragraph (deferred to pass 2)
+    assert any(b.type == "Paragraph" and "W_U J_\\ell" in b.text for b in blocks)
+
+
+def test_equation_projects_as_display_math():
+    """An Equation object → a math-display span (escaped TeX) so html2latex emits
+    \\[...\\] — NOT an escaped <p>. Verified through html2latex when present."""
+    from htmldrill.project_latex import document_to_html
+    tex = "J_\\ell = \\mathbb{E}[x] \\leq y"
+    doc = _Doc([_Obj("e", "Equation",
+                     {"flow_index": 0, "latex": tex, "text": tex, "provenance": "dom"})],
+               {"title": "D"})
+    html = document_to_html(doc)
+    assert 'class="math-display"' in html
+    assert "<p>J_" not in html                      # NOT escaped prose
+    if _have("html2latex"):
+        import html2latex as h2l
+        out = h2l.html2latex(html)
+        assert "\\[" in out and "\\]" in out
+        assert "\\mathbb{E}" in out                 # TeX survived unescaped
+        assert "textbackslash" not in out
+
+
 def test_code_block_renders_verbatim_not_escaped():
     """A code_block Paragraph (a <pre>/<code> body, e.g. a BibTeX box) must emit
     <pre> so html2latex renders it verbatim — NOT escaped prose."""

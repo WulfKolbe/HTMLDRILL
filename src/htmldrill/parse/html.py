@@ -390,6 +390,15 @@ class _StructuralWalker(HTMLParser):
             self._cur_row = []
             return
 
+        # DOM-native display math (Distill <d-math block>): capture the inner TeX
+        # as a standalone Equation block, so it projects as real \[...\] math
+        # rather than being flattened into prose and escaped. Inline <d-math>
+        # (no `block` attr) is deferred to a later pass — it needs in-paragraph
+        # span preservation — so it still folds into the surrounding text for now.
+        if tag == "d-math" and "block" in a:
+            self._open(tag, "Equation", {"provenance": "dom", "display": True})
+            return
+
         if tag in _BLOCK_TEXT_TAGS or tag in _INLINE_TEXT_TAGS:
             btype = _BLOCK_TEXT_TAGS.get(tag, "Paragraph")
             if tag in _HEADINGS:

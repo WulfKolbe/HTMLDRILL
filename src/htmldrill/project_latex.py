@@ -223,6 +223,13 @@ def document_to_html(doc, extractor: Optional[_AssetExtractor] = None) -> str:
         elif otype == "Table":
             html = _table_html(props.get("rows") or [])
             parts.append(html or (f"<p>{escape(text)}</p>" if text else ""))
+        elif otype == "Equation":
+            # DOM-native gold TeX → html2latex's math-passthrough span → \[...\].
+            # ESCAPE the TeX: html2latex un-escapes it back to real LaTeX, and
+            # escaping keeps math with < / & (e.g. aligned envs) HTML-parseable.
+            tex = str(props.get("latex") or text)
+            if tex:
+                parts.append(f'<span class="math-display">{escape(tex)}</span>')
         elif otype in ("Picture", "Figure"):
             parts.append(_figure_html(props, extractor))
         elif props.get("code_block") and text:

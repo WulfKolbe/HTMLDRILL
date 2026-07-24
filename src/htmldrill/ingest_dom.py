@@ -82,6 +82,13 @@ def _props_for(block: H.Block, flow_index: int) -> dict:
         # "cite this" box) must render VERBATIM, not as escaped prose. Carry the
         # signal so project_latex can emit <pre> instead of <p>.
         p["code_block"] = True
+    elif t == "Equation":
+        # DOM-native gold LaTeX (from <d-math block>/MathML) — a first-class
+        # latex field, provenance="dom" (no OCR, no cross-source join). The
+        # projector emits it as real display math, not escaped text.
+        p["latex"] = block.text
+        p["provenance"] = "dom"
+        p["display"] = bool(block.props.get("display", True))
     return p
 
 
