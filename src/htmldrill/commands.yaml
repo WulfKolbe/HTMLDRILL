@@ -118,6 +118,13 @@ commands:
     network: true
     done_when: fact:CAPTURED
 
+  # -- Single-file archive (network) — monolith: freeze the page + all assets --
+  - name: single
+    section: Single-file archive (network)
+    summary: Download the URL with monolith and inline every asset (CSS/images/fonts/JS) into one self-contained single.html — a portable archive AND the preferred offline model source (--no-js / --isolate levers). Records SINGLE.
+    network: true
+    done_when: fact:SINGLE
+
   # -- Print / PDF capture (network) — the htmldrill -> pdfdrill bridge --
   - name: print
     section: Print (headless, network)
@@ -150,6 +157,12 @@ commands:
     summary: Project the docmodel through pdfdrill's PlainTextProjector; write flat llm.txt. Records LLMTEXT_BUILT.
     requires: [model]
     done_when: fact:LLMTEXT_BUILT
+
+  - name: latex
+    section: Projectors (offline)
+    summary: Project the docmodel to a standalone LaTeX out.tex via html2latex (reconstructs HTML from the model, then render). Optional dep (html2latex), doctor-gated. Records LATEX_BUILT.
+    requires: [model]
+    done_when: fact:LATEX_BUILT
 
   # -- Split recovery (L4) — lazy-load & virtualization --
   # `splits` is an OFFLINE detector (reads the snapshot). `materialize` is an

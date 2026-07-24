@@ -32,6 +32,9 @@ Render (headless, network):
 Capture (headless, network):
   htmldrill capture                           Drive a real browser, scroll until lazy content loads, then capture the full DOM + a print-to-PDF + a screenshot (isolated profile). Records CAPTURED.
 
+Single-file archive (network):
+  htmldrill single                            Download the URL with monolith and inline every asset (CSS/images/fonts/JS) into one self-contained single.html — a portable archive AND the preferred offline model source (--no-js / --isolate levers). Records SINGLE.
+
 Print (headless, network):
   htmldrill print                             Print the page to PDF (--engine firefox|chrome) and validate the text layer, so pdfdrill can take over. Records PRINTED.
 
@@ -42,6 +45,7 @@ Projectors (offline):
   htmldrill tiddlers                          Project the docmodel through pdfdrill's TiddlyWikiProjector; write tiddlers.json (+ ./tiddlers/). Records TIDDLERS_BUILT.
   htmldrill md                                Project the docmodel through pdfdrill's LLMCompactProjector; write token-optimized md.md. Records MD_BUILT.
   htmldrill llmtext                           Project the docmodel through pdfdrill's PlainTextProjector; write flat llm.txt. Records LLMTEXT_BUILT.
+  htmldrill latex                             Project the docmodel to a standalone LaTeX out.tex via html2latex (reconstructs HTML from the model, then render). Optional dep (html2latex), doctor-gated. Records LATEX_BUILT.
 
 Split recovery (L4):
   htmldrill splits                            Detect split/hidden content (collapsed details, template/noscript, lazy img, content-visibility, role=feed), classified by kind + repair energy. Records SPLITS_KNOWN.

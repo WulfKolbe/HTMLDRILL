@@ -37,6 +37,8 @@ def _ctx(args) -> Ctx:
         timeout=getattr(args, "timeout", F.DEFAULT_TIMEOUT),
         window=getattr(args, "window", "1280,900"),
         engine=getattr(args, "engine", "firefox"),
+        no_js=getattr(args, "no_js", False),
+        isolate=getattr(args, "isolate", False),
         download_pdf=getattr(args, "download_pdf", False),
         download_source=getattr(args, "download_source", False),
         render_delta=getattr(args, "render_delta", False),
@@ -139,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         "tiddlers": "TiddlyWikiProjector → tiddlers.json (+ ./tiddlers/ files)",
         "md": "LLMCompactProjector → md.md (token-optimized markdown)",
         "llmtext": "PlainTextProjector → llm.txt (flat flow-ordered text)",
+        "latex": "html2latex → out.tex (standalone LaTeX document)",
     }
     for name, helptext in PROJECTORS.items():
         p = sub.add_parser(name, help=helptext)
@@ -223,6 +226,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--force", action="store_true", help="re-capture even if CAPTURED")
     p.add_argument("--timeout", type=float, default=90.0, help="per-page load timeout s")
     p.set_defaults(cmd="capture")
+
+    # single — monolith: freeze the page + all assets into ONE self-contained HTML
+    p = sub.add_parser("single",
+                       help="download the URL with monolith and inline every asset "
+                            "into one self-contained single.html (archive + model source)")
+    url_arg(p); work_arg(p)
+    p.add_argument("--force", action="store_true", help="re-archive even if SINGLE")
+    p.add_argument("--no-js", dest="no_js", action="store_true",
+                   help="strip JavaScript (cleaner, more deterministic model source)")
+    p.add_argument("--isolate", dest="isolate", action="store_true",
+                   help="cut the archive off from the network entirely (monolith -I)")
+    p.add_argument("--ua", help="override User-Agent")
+    p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
+    p.set_defaults(cmd="single")
 
     # print — page -> PDF, then judge the text layer (the pdfdrill bridge)
     p = sub.add_parser("print", help="print the page to PDF and validate its text layer")

@@ -30,6 +30,7 @@ from .sidecar import Sidecar, resolve_local_id, work_root
 from .sources import capture as CAP
 from .sources import fetch as F
 from .sources import known_hosts as K
+from .sources import monolith as MONO
 from .sources import print_pdf as P
 from .sources import render as R
 
@@ -52,6 +53,8 @@ COMPARED = "COMPARED"
 PRINTED = "PRINTED"
 # L1c (capture — scroll-materialize a real page, then grab DOM + PDF + screenshot)
 CAPTURED = "CAPTURED"
+# L1d (single — monolith: freeze the page + all assets into one self-contained HTML)
+SINGLE = "SINGLE"
 # L0/known-host (arxiv — recognise the source, take the cheapest richest route)
 ARXIV_KNOWN = "ARXIV_KNOWN"
 # L5 (model)
@@ -60,6 +63,8 @@ MODEL_BUILT = "MODEL_BUILT"
 TIDDLERS_BUILT = "TIDDLERS_BUILT"
 MD_BUILT = "MD_BUILT"
 LLMTEXT_BUILT = "LLMTEXT_BUILT"
+# L6 (latex projector — offline; html2latex, optional dep)
+LATEX_BUILT = "LATEX_BUILT"
 # L4 (split recovery — lazy-load / virtualization)
 SPLITS_KNOWN = "SPLITS_KNOWN"
 MATERIALIZED = "MATERIALIZED"
@@ -90,6 +95,8 @@ class Ctx:
     model_name: str = ""              # chatlog: the LLM name recorded with the turn
     depth: int = 1                    # crawl: max link depth from the start url
     engine: str = "firefox"           # print: firefox (selenium) | chrome
+    no_js: bool = False               # single: strip JavaScript from the archive
+    isolate: bool = False             # single: cut the archive off from the network
     download_pdf: bool = False        # arxiv: also fetch the PDF
     download_source: bool = False     # arxiv: also fetch the e-print LaTeX .tgz
     max_pages: int = 20               # crawl: hard cap on pages visited
@@ -570,6 +577,17 @@ def _rendered_or_static(sc: Sidecar) -> tuple[str, str]:
     raise FileNotFoundError("nothing captured yet — run `capture`, `fetch`, or `render` first")
 
 
+def _model_source_html(sc: Sidecar) -> tuple[str, str]:
+    """(html, source-label) for the `model` ingestion. Prefers the monolith
+    ``single.html`` — its assets are inlined as `data:` URIs, so offline
+    `ingest_dom` sees real image src's and complete markup instead of dangling
+    network references. Falls through to the capture/render/static DOM otherwise,
+    keeping every prior model path unchanged when no `single.html` exists."""
+    if sc.has(SINGLE) and sc.has_blob("single.html"):
+        return sc.read_blob("single.html") or "", "single"
+    return _rendered_or_static(sc)
+
+
 def cmd_dom(ctx: Ctx) -> str:
     sc = Sidecar(_resolve_id(ctx), work=ctx.work)
     if not sc.has(RENDERED):
@@ -670,14 +688,14 @@ def cmd_model(ctx: Ctx) -> str:
     commands, it hard-gates on the captured-snapshot fact). Idempotent: skips when
     MODEL_BUILT unless ``--force``."""
     sc = Sidecar(_resolve_id(ctx), work=ctx.work)
-    if not (sc.has(CAPTURED) or sc.has(RENDERED) or sc.has(FETCHED)):
+    if not (sc.has(SINGLE) or sc.has(CAPTURED) or sc.has(RENDERED) or sc.has(FETCHED)):
         raise FileNotFoundError(
             f"no snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` "
-            f"(or `render`) first; `model` is offline and won't fetch.")
+            f"(or `single`/`render`) first; `model` is offline and won't fetch.")
     if sc.has(MODEL_BUILT) and sc.has_blob("model.docmodel.json") and not ctx.force:
         return _model_report(sc, cached=True)
 
-    html, source = _rendered_or_static(sc)        # prefer rendered DOM, else static
+    html, source = _model_source_html(sc)         # prefer the self-contained single.html
     bibkey = sc.local_id.upper()
 
     # docmodel is the one external bridge — import lazily, only inside `model`.
@@ -872,6 +890,77 @@ def cmd_llmtext(ctx: Ctx) -> str:
     ``model`` (auto-ensured). Idempotent via LLMTEXT_BUILT / --force."""
     return _run_projector(ctx, name="llmtext", classname="PlainTextProjector",
                           out_blob="llm.txt", fact=LLMTEXT_BUILT)
+
+
+# -- L6 latex projector: docmodel -> HTML -> LaTeX (html2latex, optional dep) --
+#
+# The other projectors are pdfdrill's own docops operators; this one bridges to
+# html2latex instead. It is the FIRST HALF of "fill the docmodel with LaTeX": the
+# same docmodel→HTML→LaTeX conversion is exactly what pdfdrill's LaTeX ingestion
+# (merge_latex.merge_latex_prose / the provenance="tex" latex_candidate
+# realizations) consumes — see the design doc's bridge note.
+
+def cmd_latex(ctx: Ctx) -> str:
+    """Project the docmodel Document to a standalone LaTeX ``out.tex`` via
+    html2latex: reconstruct a clean HTML document from the model (flow order,
+    section hierarchy), then ``html2latex.render`` it to a full ``\\documentclass``
+    document. OFFLINE; requires ``model`` (auto-ensured). Idempotent via
+    LATEX_BUILT / --force.
+
+    html2latex is an OPTIONAL dependency (Python 3.10+, not stdlib). Absent, this
+    errors with an install hint — exactly how `print --engine firefox` gates
+    selenium. The emitted LaTeX is structurally faithful but inline-plain (the
+    model carries collapsed text; see docs/superpowers/specs)."""
+    sc = Sidecar(_resolve_id(ctx), work=ctx.work)
+    if sc.has(LATEX_BUILT) and sc.has_blob("out.tex") and not ctx.force:
+        return _latex_report(sc, cached=True)
+    doc = _load_document(sc)                 # ensures pdfdrill bridge + loads model
+    try:
+        import html2latex as _h2l
+    except Exception as e:  # noqa: BLE001 — actionable, not a cryptic ImportError
+        raise RuntimeError(
+            f"`latex` needs html2latex, which isn't importable ({e}). Install it: "
+            f"`pip install 'git+https://github.com/pankaj28843/html2latex'` "
+            f"(it also needs justhtml<2 for the current adapter)."
+        ) from e
+    from .project_latex import document_to_html
+
+    html = document_to_html(doc)
+    t0 = time.perf_counter()
+    tex = _h2l.render(html)
+    cost_ms = (time.perf_counter() - t0) * 1000
+    if not isinstance(tex, str):
+        tex = tex.decode("utf-8") if isinstance(tex, bytes) else str(tex)
+
+    sc.write_blob("out.tex", tex)
+    by_type: dict[str, int] = {}
+    for o in doc.objects.values():
+        by_type[o.type] = by_type.get(o.type, 0) + 1
+    sc.set_evidence("latex_bytes", len(tex.encode("utf-8", "replace")))
+    sc.set_evidence("latex_objects_by_type", by_type)
+    sc.set_layer("latex", {"path": "out.tex", "format": "application/x-tex"})
+    sc.add_fact(LATEX_BUILT)
+    sc.log_transition("latex", _prev(sc, LATEX_BUILT), LATEX_BUILT, cost_ms,
+                      f"html2latex → out.tex ({len(tex)} chars) from {by_type}")
+    sc.save()
+    return _latex_report(sc, cached=False)
+
+
+def _latex_report(sc: Sidecar, cached: bool) -> str:
+    ev = sc.evidence
+    tag = "cached latex" if cached else "latex"
+    by_type = ev.get("latex_objects_by_type", {})
+    lines = [
+        f"{tag} {sc.local_id}: docmodel → standalone LaTeX "
+        f"({ev.get('latex_bytes', '?')} bytes)",
+        f"  → {sc.blob_path('out.tex')}",
+    ]
+    if by_type:
+        lines.append("  projected objects: " +
+                     ", ".join(f"{t}×{n}" for t, n in sorted(by_type.items())))
+    lines.append("  next: compile with `pdflatex out.tex` "
+                 "(inline math/emphasis is plain — see the spec's fidelity note)")
+    return "\n".join(lines)
 
 
 # -- L4 split recovery (lazy-load & virtualization) --------------------------
@@ -1591,6 +1680,55 @@ def _capture_report(sc: Sidecar, cached: bool) -> str:
     return "\n".join(lines)
 
 
+# -- L1d single: freeze the page + all assets into one self-contained HTML ----
+
+def cmd_single(ctx: Ctx) -> str:
+    """Download the URL with monolith and inline EVERY asset (CSS/images/fonts/JS)
+    into one self-contained ``single.html`` (ESCALATION — network; never in any
+    `requires:`). Two payoffs: a portable archive that renders offline, and the
+    preferred SOURCE for the offline `model` pipeline (inlined `data:` assets let
+    `ingest_dom` see real image src's and complete markup, not dangling network
+    references). Idempotent: skips when SINGLE unless ``--force``.
+
+    Optional levers: ``--no-js`` drops scripts (a cleaner, more deterministic
+    model source); ``--isolate`` cuts the result off from the network entirely."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill single <url> [--no-js] [--isolate]")
+    sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    if sc.has(SINGLE) and sc.has_blob("single.html") and not ctx.force:
+        return _single_report(sc, cached=True)
+    t0 = time.perf_counter()
+    res = MONO.save_single(ctx.url, sc.blob_path("single.html"), ua=ctx.ua,
+                           timeout=ctx.timeout, no_js=ctx.no_js, isolate=ctx.isolate)
+    cost_ms = (time.perf_counter() - t0) * 1000
+
+    sc.set_evidence("url", sc.get_evidence("url") or ctx.url)
+    sc.set_evidence("single_bytes", res.bytes)
+    sc.set_evidence("single_final_url", res.final_url)
+    sc.set_evidence("single_no_js", ctx.no_js)
+    sc.set_evidence("single_isolated", ctx.isolate)
+    sc.set_layer("single_html", {"path": "single.html", "format": "text/html"})
+    sc.add_fact(SINGLE)
+    sc.log_transition("single", _prev(sc, SINGLE), SINGLE, cost_ms,
+                      f"{res.bytes}B self-contained (no_js={ctx.no_js} isolate={ctx.isolate})")
+    sc.save()
+    return _single_report(sc, cached=False)
+
+
+def _single_report(sc: Sidecar, cached: bool) -> str:
+    ev = sc.evidence
+    tag = "cached single" if cached else "archived"
+    lines = [
+        f"{tag} {ev.get('url')} → one self-contained HTML "
+        f"({ev.get('single_bytes')} bytes, all assets inlined)",
+        f"  id:          {sc.local_id}",
+        f"  archive:     {sc.blob_path('single.html')}",
+        f"  flags:       no-js={ev.get('single_no_js')}  isolated={ev.get('single_isolated')}",
+        f"  next: `model` (prefers this self-contained HTML) → `latex`/`tiddlers`/`md`",
+    ]
+    return "\n".join(lines)
+
+
 # -- L1b print: the htmldrill -> pdfdrill bridge -----------------------------
 
 def cmd_print(ctx: Ctx) -> str:
@@ -1738,11 +1876,23 @@ def cmd_doctor(ctx: Ctx) -> str:
                    "ok" if _sel else "pip install selenium — optional"))
     checks.append(("pdftotext (print text-layer validator)", bool(shutil.which("pdftotext")),
                    shutil.which("pdftotext") or "none — install poppler-utils"))
+    mono = MONO.find_monolith()
+    checks.append(("monolith (single archive)", bool(mono),
+                   MONO.monolith_version(mono) or mono
+                   or "none — `cargo install monolith` or set $HTMLDRILL_MONOLITH"))
+    try:
+        import html2latex  # noqa: F401
+        _h2l = True
+    except Exception:
+        _h2l = False
+    checks.append(("html2latex (latex projector)", _h2l,
+                   "ok" if _h2l else
+                   "pip install 'git+https://github.com/pankaj28843/html2latex' — optional"))
     lines = ["htmldrill doctor:"]
     for name, ok, detail in checks:
         lines.append(f"  [{'✓' if ok else '✗'}] {name:<32} {detail}")
     # Chrome is optional (L0 needs none); don't let its absence fail the verdict.
-    _optional = ("chrome", "geckodriver", "selenium", "pdftotext")
+    _optional = ("chrome", "geckodriver", "selenium", "pdftotext", "monolith", "html2latex")
     ok_all = all(ok for name, ok, _ in checks
                  if not any(o in name for o in _optional))
     lines.append("  → all systems go." if ok_all else "  → fix the ✗ items above.")
@@ -1755,6 +1905,7 @@ def cmd_config(ctx: Ctx) -> str:
         f"  work dir:    {work_root(ctx.work)}  (--work / $HTMLDRILL_WORK)\n"
         f"  user-agent:  {ctx.ua or F.DEFAULT_UA}  ($HTMLDRILL_UA)\n"
         f"  timeout:     {ctx.timeout}s  ($HTMLDRILL_TIMEOUT)\n"
+        f"  monolith:    {MONO.find_monolith() or '(not found)'}  ($HTMLDRILL_MONOLITH)\n"
         f"  python:      {platform.python_version()} @ {sys.executable}"
     )
 
@@ -1780,10 +1931,12 @@ HANDLERS = {
     "compare": cmd_compare,
     "print": cmd_print,
     "capture": cmd_capture,
+    "single": cmd_single,
     "model": cmd_model,
     "tiddlers": cmd_tiddlers,
     "md": cmd_md,
     "llmtext": cmd_llmtext,
+    "latex": cmd_latex,
     "splits": cmd_splits,
     "materialize": cmd_materialize,
     "crawl": cmd_crawl,

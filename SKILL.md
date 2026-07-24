@@ -107,6 +107,12 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 |---|---|
 | `htmldrill capture` | Drive a real browser, scroll until lazy content loads, then capture the full DOM + a print-to-PDF + a screenshot (isolated profile). Records CAPTURED. _(network)_ |
 
+### Single-file archive (network)
+
+| Command | Returns |
+|---|---|
+| `htmldrill single` | Download the URL with monolith and inline every asset (CSS/images/fonts/JS) into one self-contained single.html — a portable archive AND the preferred offline model source (--no-js / --isolate levers). Records SINGLE. _(network)_ |
+
 ### Print (headless, network)
 
 | Command | Returns |
@@ -126,6 +132,7 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 | `htmldrill tiddlers` | Project the docmodel through pdfdrill's TiddlyWikiProjector; write tiddlers.json (+ ./tiddlers/). Records TIDDLERS_BUILT. |
 | `htmldrill md` | Project the docmodel through pdfdrill's LLMCompactProjector; write token-optimized md.md. Records MD_BUILT. |
 | `htmldrill llmtext` | Project the docmodel through pdfdrill's PlainTextProjector; write flat llm.txt. Records LLMTEXT_BUILT. |
+| `htmldrill latex` | Project the docmodel to a standalone LaTeX out.tex via html2latex (reconstructs HTML from the model, then render). Optional dep (html2latex), doctor-gated. Records LATEX_BUILT. |
 
 ### Split recovery (L4)
 
