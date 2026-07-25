@@ -29,6 +29,7 @@ from .parse import html as H
 from .sidecar import Sidecar, resolve_local_id, work_root
 from .sources import capture as CAP
 from .sources import fetch as F
+from .sources import inline as INLINE
 from .sources import known_hosts as K
 from .sources import monolith as MONO
 from .sources import print_pdf as P
@@ -1720,39 +1721,77 @@ def cmd_single(ctx: Ctx) -> str:
     Optional levers: ``--no-js`` drops scripts (a cleaner, more deterministic
     model source); ``--isolate`` cuts the result off from the network entirely."""
     if not ctx.url:
-        raise ValueError("usage: htmldrill single <url> [--no-js] [--isolate]")
+        raise ValueError("usage: htmldrill single <url> [--engine auto|monolith|python] "
+                         "[--no-js] [--isolate]")
     sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
     if sc.has(SINGLE) and sc.has_blob("single.html") and not ctx.force:
         return _single_report(sc, cached=True)
+
+    # engine: monolith (Rust binary) or python (stdlib inliner, JS-aware via Chrome).
+    # auto → monolith when installed, else the pure-Python path (no Rust needed).
+    engine = ctx.engine if ctx.engine in ("monolith", "python") else (
+        "monolith" if MONO.find_monolith() else "python")
     t0 = time.perf_counter()
-    res = MONO.save_single(ctx.url, sc.blob_path("single.html"), ua=ctx.ua,
-                           timeout=ctx.timeout, no_js=ctx.no_js, isolate=ctx.isolate)
+    if engine == "monolith":
+        res = MONO.save_single(ctx.url, sc.blob_path("single.html"), ua=ctx.ua,
+                               timeout=ctx.timeout, no_js=ctx.no_js, isolate=ctx.isolate)
+        nbytes, source, stats = res.bytes, "monolith", {}
+    else:
+        nbytes, source, stats = _single_python(ctx, sc)
     cost_ms = (time.perf_counter() - t0) * 1000
 
     sc.set_evidence("url", sc.get_evidence("url") or ctx.url)
-    sc.set_evidence("single_bytes", res.bytes)
-    sc.set_evidence("single_final_url", res.final_url)
+    sc.set_evidence("single_bytes", nbytes)
+    sc.set_evidence("single_engine", engine)
+    sc.set_evidence("single_source", source)
     sc.set_evidence("single_no_js", ctx.no_js)
-    sc.set_evidence("single_isolated", ctx.isolate)
+    sc.set_evidence("single_stats", stats)
     sc.set_layer("single_html", {"path": "single.html", "format": "text/html"})
     sc.add_fact(SINGLE)
     sc.log_transition("single", _prev(sc, SINGLE), SINGLE, cost_ms,
-                      f"{res.bytes}B self-contained (no_js={ctx.no_js} isolate={ctx.isolate})")
+                      f"{nbytes}B via {engine}/{source} (no_js={ctx.no_js}) {stats}")
     sc.save()
     return _single_report(sc, cached=False)
+
+
+def _single_python(ctx: Ctx, sc: Sidecar) -> tuple[int, str, dict]:
+    """Pure-Python archive: render with Chrome for a JS-aware DOM when available
+    (captures JS-built content monolith can't), else the static fetch; then inline
+    every asset as a data: URI. Returns (bytes_written, source_label, stats)."""
+    chrome = R.find_chrome()
+    if chrome and not ctx.isolate:
+        rr = R.render(ctx.url, timeout=max(ctx.timeout, 45.0), screenshot=False)
+        html, base, source = rr.dom, rr.final_url, "rendered"
+    else:
+        fr = F.fetch(ctx.url, timeout=ctx.timeout, ua=ctx.ua)
+        html, base, source = fr.text, fr.final_url, "static"
+    out, stats = INLINE.inline_assets(html, base, timeout=ctx.timeout, ua=ctx.ua,
+                                      strip_scripts=ctx.no_js)
+    n = len(out.encode("utf-8", "replace"))
+    sc.write_blob("single.html", out)
+    return n, source, stats
 
 
 def _single_report(sc: Sidecar, cached: bool) -> str:
     ev = sc.evidence
     tag = "cached single" if cached else "archived"
+    engine = ev.get("single_engine", "monolith")
+    source = ev.get("single_source", "")
+    stats = ev.get("single_stats") or {}
     lines = [
         f"{tag} {ev.get('url')} → one self-contained HTML "
         f"({ev.get('single_bytes')} bytes, all assets inlined)",
         f"  id:          {sc.local_id}",
+        f"  engine:      {engine}"
+        + (f" (from the {source} DOM)" if source and source != "monolith" else ""),
         f"  archive:     {sc.blob_path('single.html')}",
-        f"  flags:       no-js={ev.get('single_no_js')}  isolated={ev.get('single_isolated')}",
-        f"  next: `model` (prefers this self-contained HTML) → `latex`/`tiddlers`/`md`",
     ]
+    if stats:
+        lines.append(f"  inlined:     {stats.get('assets', 0)} assets, "
+                     f"{stats.get('stylesheets', 0)} stylesheets, "
+                     f"{stats.get('scripts_dropped', 0)} scripts dropped"
+                     + (f", {stats['failed']} failed" if stats.get('failed') else ""))
+    lines.append("  next: `model` (prefers this self-contained HTML) → `latex`/`tiddlers`/`md`")
     return "\n".join(lines)
 
 
@@ -1904,9 +1943,9 @@ def cmd_doctor(ctx: Ctx) -> str:
     checks.append(("pdftotext (print text-layer validator)", bool(shutil.which("pdftotext")),
                    shutil.which("pdftotext") or "none — install poppler-utils"))
     mono = MONO.find_monolith()
-    checks.append(("monolith (single archive)", bool(mono),
+    checks.append(("monolith (single --engine monolith)", bool(mono),
                    MONO.monolith_version(mono) or mono
-                   or "none — `cargo install monolith` or set $HTMLDRILL_MONOLITH"))
+                   or "none — `single --engine python` works without it (stdlib inliner)"))
     try:
         import html2latex  # noqa: F401
         _h2l = True

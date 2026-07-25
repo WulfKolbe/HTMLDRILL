@@ -232,11 +232,15 @@ def main(argv: list[str] | None = None) -> int:
                        help="download the URL with monolith and inline every asset "
                             "into one self-contained single.html (archive + model source)")
     url_arg(p); work_arg(p)
+    p.add_argument("--engine", choices=["auto", "monolith", "python"], default="auto",
+                   help="auto = monolith if installed else python; python = stdlib "
+                        "inliner (no Rust), JS-aware via Chrome render")
     p.add_argument("--force", action="store_true", help="re-archive even if SINGLE")
     p.add_argument("--no-js", dest="no_js", action="store_true",
                    help="strip JavaScript (cleaner, more deterministic model source)")
     p.add_argument("--isolate", dest="isolate", action="store_true",
-                   help="cut the archive off from the network entirely (monolith -I)")
+                   help="monolith: cut off from the network (-I); python: force "
+                        "static fetch (no browser render)")
     p.add_argument("--ua", help="override User-Agent")
     p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
     p.set_defaults(cmd="single")

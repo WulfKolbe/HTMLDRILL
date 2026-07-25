@@ -111,7 +111,7 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 
 | Command | Returns |
 |---|---|
-| `htmldrill single` | Download the URL with monolith and inline every asset (CSS/images/fonts/JS) into one self-contained single.html — a portable archive AND the preferred offline model source (--no-js / --isolate levers). Records SINGLE. _(network)_ |
+| `htmldrill single` | Archive the URL into one self-contained single.html with every asset inlined — a portable archive AND the preferred offline model source. --engine auto\|monolith\|python (python = stdlib inliner, no Rust, JS-aware via Chrome render). Records SINGLE. _(network)_ |
 
 ### Print (headless, network)
 
