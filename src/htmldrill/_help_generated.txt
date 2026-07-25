@@ -10,6 +10,9 @@ Fetch (network):
 Known-host routing (network):
   htmldrill arxiv                             Recognise an arXiv URL/id; read title/authors/abstract/category from the abs page for free and surface the pdf + e-print LaTeX routes (--pdf/--source download them). Records ARXIV_KNOWN.
 
+Routing (offline):
+  htmldrill route                             Classify a URL and name the *drill tool that should handle it — pdfdrill (arXiv/PDF), YTDRILL (video), CHATDRILL (auth-gated chat like perplexity/chatgpt shares), or htmldrill (ordinary pages). A clear verdict, offline, no fetch. Modular host registry (lifts into anydrill).
+
 Introspection (snapshot, no render):
   htmldrill size                              Bytes, line/tag count, framework guess, and a static-vs-render verdict.
   htmldrill headers                           The captured HTTP response headers, one per line.

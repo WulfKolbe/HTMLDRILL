@@ -76,6 +76,12 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 |---|---|
 | `htmldrill arxiv` | Recognise an arXiv URL/id; read title/authors/abstract/category from the abs page for free and surface the pdf + e-print LaTeX routes (--pdf/--source download them). Records ARXIV_KNOWN. _(network)_ |
 
+### Routing (offline)
+
+| Command | Returns |
+|---|---|
+| `htmldrill route` | Classify a URL and name the *drill tool that should handle it — pdfdrill (arXiv/PDF), YTDRILL (video), CHATDRILL (auth-gated chat like perplexity/chatgpt shares), or htmldrill (ordinary pages). A clear verdict, offline, no fetch. Modular host registry (lifts into anydrill). |
+
 ### Introspection (snapshot, no render)
 
 | Command | Returns |

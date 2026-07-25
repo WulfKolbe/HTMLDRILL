@@ -211,7 +211,32 @@ def _fetch_report(sc: Sidecar, cached: bool) -> str:
     else:
         lines.append(f"  ⚠ this is a {kind.upper()}, not HTML — stored raw; "
                      f"snapshot commands won't parse it")
+    # routing hint: a 200-OK HTML page can still belong to another *drill tool —
+    # e.g. an auth-gated chat SPA shell (CHATDRILL) or a video page (YTDRILL).
+    from .sources import router as RT
+    v = RT.route(ev.get("url") or "")
+    if v.drill in ("chatdrill", "ytdrill"):
+        lines.append(f"  → {v.handler} is the right tool for this URL: {v.reason}")
     return "\n".join(lines)
+
+
+def cmd_route(ctx: Ctx) -> str:
+    """Classify a URL and name which *drill tool should handle it (offline, no
+    fetch). A clear verdict for arXiv/PDF (pdfdrill), videos (YTDRILL), auth-gated
+    chat (CHATDRILL), and ordinary pages (htmldrill)."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill route <url>")
+    from .sources import router as RT
+    v = RT.route(ctx.url)
+    verdict = ("htmldrill can handle this." if v.drill == "htmldrill"
+               else f"{v.handler} is the right tool — NOT htmldrill.")
+    return "\n".join([
+        f"route {ctx.url}",
+        f"  handler: {v.handler}" + ("" if v.known else "  (default)"),
+        f"  reason:  {v.reason}",
+        f"  next:    {v.action}",
+        f"  → {verdict}",
+    ])
 
 
 # -- known-host: arXiv (recognise the source, take the cheapest richest route) --
@@ -1980,6 +2005,7 @@ def cmd_config(ctx: Ctx) -> str:
 HANDLERS = {
     "fetch": cmd_fetch,
     "arxiv": cmd_arxiv,
+    "route": cmd_route,
     "size": cmd_size,
     "headers": cmd_headers,
     "meta": cmd_meta,
