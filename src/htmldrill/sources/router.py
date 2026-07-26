@@ -22,6 +22,7 @@ from typing import Callable, Optional
 from urllib.parse import urlparse
 
 from .known_hosts import host_of, is_url, known_host, parse_arxiv_id
+from .scholar import is_scholar_citations
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,17 @@ def _rule_video(url: str) -> Optional[Verdict]:
         "hand to YTDRILL (video id + transcript/caption track)", rule="video")
 
 
+def _rule_scholar(url: str) -> Optional[Verdict]:
+    if is_scholar_citations(url):
+        return Verdict(
+            "htmldrill", "htmldrill",
+            "Google Scholar profile — a paginated 'Show more' works list; the full "
+            "set is reachable via cstart/pagesize (no browser clicks)",
+            "htmldrill scholar <url>  (fetches every page, merges all works)",
+            rule="scholar", known=True)
+    return None
+
+
 def _rule_chat(url: str) -> Optional[Verdict]:
     prefixes = _CHAT_HOSTS.get(_bare_host(url))
     if prefixes is None:
@@ -106,7 +118,7 @@ def _rule_chat(url: str) -> Optional[Verdict]:
 
 #: ordered rule registry — first match wins. Append to extend.
 RULES: list[Callable[[str], Optional[Verdict]]] = [
-    _rule_arxiv, _rule_pdf, _rule_video, _rule_chat,
+    _rule_arxiv, _rule_pdf, _rule_video, _rule_scholar, _rule_chat,
 ]
 
 

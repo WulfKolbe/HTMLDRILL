@@ -32,6 +32,7 @@ from .sources import fetch as F
 from .sources import inline as INLINE
 from .sources import known_hosts as K
 from .sources import monolith as MONO
+from .sources import scholar as SCH
 from .sources import print_pdf as P
 from .sources import render as R
 
@@ -58,6 +59,8 @@ CAPTURED = "CAPTURED"
 SINGLE = "SINGLE"
 # L0/known-host (arxiv — recognise the source, take the cheapest richest route)
 ARXIV_KNOWN = "ARXIV_KNOWN"
+# L0/known-host (scholar — paginate past the "Show more" wall, merge all works)
+SCHOLAR = "SCHOLAR"
 # L5 (model)
 MODEL_BUILT = "MODEL_BUILT"
 # L6 (projectors — offline)
@@ -218,6 +221,62 @@ def _fetch_report(sc: Sidecar, cached: bool) -> str:
     if v.drill in ("chatdrill", "ytdrill"):
         lines.append(f"  → {v.handler} is the right tool for this URL: {v.reason}")
     return "\n".join(lines)
+
+
+def cmd_scholar(ctx: Ctx) -> str:
+    """Recognise a Google Scholar profile and fetch EVERY page of works past the
+    "Show more" wall via cstart/pagesize URL pagination (no browser, no clicks),
+    merging them into one complete raw.html snapshot. Records FETCHED (so the whole
+    pipeline sees all works) + SCHOLAR. NETWORK. Idempotent via SCHOLAR / --force."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill scholar <profile-url>")
+    if not SCH.is_scholar_citations(ctx.url):
+        return (f"{ctx.url} is not a Google Scholar citations profile "
+                f"(expected scholar.google.*/citations?user=…).")
+    sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    if sc.has(SCHOLAR) and sc.has_blob("raw.html") and not ctx.force:
+        return _scholar_report(sc, cached=True)
+
+    t0 = time.perf_counter()
+    def _fetch(u: str) -> str:
+        return F.fetch(u, timeout=ctx.timeout, ua=ctx.ua).text or ""
+    merged, total, pages = SCH.fetch_all_works(ctx.url, _fetch)
+    cost_ms = (time.perf_counter() - t0) * 1000
+    if total == 0:
+        return (f"Fetched {pages} page(s) but found no work rows — Scholar may have "
+                f"served a robot check, or the profile is empty/private.")
+
+    sc.write_blob("raw.html", merged)
+    sc.write_blob("headers.json", json.dumps({"x-htmldrill": "scholar-merged"}, indent=2))
+    sc.set_evidence("url", ctx.url)
+    sc.set_evidence("final_url", ctx.url)
+    sc.set_evidence("status", 200)
+    sc.set_evidence("content_type", "text/html")
+    sc.set_evidence("content_kind", "html")
+    sc.set_evidence("raw_blob", "raw.html")
+    sc.set_evidence("bytes", len(merged.encode("utf-8", "replace")))
+    sc.set_evidence("scholar_entries", total)
+    sc.set_evidence("scholar_pages", pages)
+    sc.set_layer("raw_html", {"path": "raw.html", "format": "text/html"})
+    sc.add_fact(FETCHED)
+    sc.add_fact(SCHOLAR)
+    sc.log_transition("scholar", _prev(sc, SCHOLAR), SCHOLAR, cost_ms,
+                      f"{total} works merged from {pages} page(s)")
+    sc.save()
+    return _scholar_report(sc, cached=False)
+
+
+def _scholar_report(sc: Sidecar, cached: bool) -> str:
+    ev = sc.evidence
+    tag = "cached scholar" if cached else "scholar"
+    return "\n".join([
+        f"{tag} {ev.get('url')}",
+        f"  id:       {sc.local_id}",
+        f"  works:    {ev.get('scholar_entries')} entries merged from "
+        f"{ev.get('scholar_pages')} page(s) (past the 'Show more' wall via cstart/pagesize)",
+        f"  snapshot: {sc.blob_path('raw.html')}  ({ev.get('bytes')} bytes)",
+        f"  next: links · outline · model · single — all now see every work",
+    ])
 
 
 def cmd_route(ctx: Ctx) -> str:
@@ -2005,6 +2064,7 @@ def cmd_config(ctx: Ctx) -> str:
 HANDLERS = {
     "fetch": cmd_fetch,
     "arxiv": cmd_arxiv,
+    "scholar": cmd_scholar,
     "route": cmd_route,
     "size": cmd_size,
     "headers": cmd_headers,

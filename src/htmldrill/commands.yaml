@@ -36,6 +36,12 @@ commands:
     network: true
     done_when: fact:ARXIV_KNOWN
 
+  - name: scholar
+    section: Known-host routing (network)
+    summary: Recognise a Google Scholar profile and fetch EVERY page of works past the "Show more" wall via cstart/pagesize URL pagination (no browser, no clicks), merged into one raw.html snapshot. Records FETCHED + SCHOLAR.
+    network: true
+    done_when: fact:SCHOLAR
+
   # -- Routing (offline) — which *drill tool should handle this URL --
   - name: route
     section: Routing (offline)

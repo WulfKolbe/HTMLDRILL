@@ -84,6 +84,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
     p.set_defaults(cmd="arxiv")
 
+    # scholar — paginate a Google Scholar profile past the "Show more" wall
+    p = sub.add_parser("scholar",
+                       help="fetch every page of a Google Scholar profile's works "
+                            "(cstart/pagesize pagination) merged into one snapshot")
+    url_arg(p); work_arg(p)
+    p.add_argument("--force", action="store_true", help="re-fetch even if SCHOLAR")
+    p.add_argument("--ua", help="override User-Agent")
+    p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
+    p.set_defaults(cmd="scholar")
+
     # route — classify a URL: which *drill tool should handle it (offline, no fetch)
     p = sub.add_parser("route",
                        help="name the *drill tool that should handle a URL "
