@@ -62,7 +62,8 @@ NOT_OBSERVED = _NotObserved()
 class Observation:
     """The raw material every detector reads. Nothing derived, nothing decided."""
 
-    __slots__ = ("html", "headers", "url", "status", "rendered_html", "_collected")
+    __slots__ = ("html", "headers", "url", "status", "rendered_html",
+                 "_collected", "_text", "_splits")
 
     def __init__(self, html: str | None, headers: dict | None, url: str | None,
                  status: int | None, rendered_html: str | None = None) -> None:
@@ -72,6 +73,13 @@ class Observation:
         self.status = status
         self.rendered_html = rendered_html
         self._collected: Any = None
+        self._text: Any = None
+        self._splits: Any = None
+
+    # Each of these is a full pass over the markup. On a large input (the
+    # codebase's own worked example is a 62MB export) running them per-detector
+    # instead of per-observation is the difference between one pass and five, so
+    # they are memoized here rather than called freely inside detectors.
 
     @property
     def collected(self) -> H.Collected:
@@ -79,6 +87,20 @@ class Observation:
         if self._collected is None:
             self._collected = H.collect(self.html)
         return self._collected
+
+    @property
+    def text(self) -> str:
+        """The extracted visible static text, parsed once."""
+        if self._text is None:
+            self._text = H.extract_text(self.html).strip()
+        return self._text
+
+    @property
+    def splits(self) -> list:
+        """The split/hidden-content occurrences, detected once."""
+        if self._splits is None:
+            self._splits = H.detect_splits(self.html)
+        return self._splits
 
     def header(self, name: str) -> str | None:
         v = self.headers.get(name.lower())
@@ -267,7 +289,7 @@ def _fw_marker(o: Observation):
 def _static_text_chars(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return len(H.extract_text(o.html).strip())
+    return len(o.text)
 
 
 _SCRIPT_BODY = re.compile(r"<script\b[^>]*>(.*?)</script\s*>", re.I | re.S)
@@ -441,7 +463,7 @@ def _lazy_media(o: Observation):
 def _collapsed_bodies(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return sum(1 for s in H.detect_splits(o.html) if s.kind == "collapsed")
+    return sum(1 for s in o.splits if s.kind == "collapsed")
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +482,7 @@ def _link_text_ratio(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
     anchor_chars = sum(len(t.strip()) for _, t in o.collected.anchors)
-    total = len(H.extract_text(o.html).strip())
+    total = len(o.text)
     if total == 0:
         return 1.0 if anchor_chars else 0.0
     return min(1.0, anchor_chars / total)
@@ -494,7 +516,7 @@ def _render_delta_chars(o: Observation):
     """
     if o.rendered_html is None or not o.has_html:
         return NOT_OBSERVED
-    static_chars = len(H.extract_text(o.html).strip())
+    static_chars = len(o.text)
     rendered_chars = len(H.extract_text(o.rendered_html).strip())
     return max(0, rendered_chars - static_chars)
 
