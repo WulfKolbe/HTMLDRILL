@@ -343,10 +343,11 @@ def _scholar_report(sc: Sidecar, cached: bool) -> str:
     return "\n".join([
         f"{tag} {ev.get('url')}",
         f"  id:       {sc.local_id}",
-        f"  works:    {ev.get('scholar_entries')} entries merged from "
-        f"{ev.get('scholar_pages')} page(s) (past the 'Show more' wall via cstart/pagesize)",
+        f"  works:    {ev.get('scholar_entries')} entries extracted from "
+        f"{ev.get('scholar_pages')} page(s) into a clean static list "
+        f"(past the 'Show more' wall via cstart/pagesize — no JS, no button)",
         f"  snapshot: {sc.blob_path('raw.html')}  ({ev.get('bytes')} bytes)",
-        f"  next: links · outline · model · single — all now see every work",
+        f"  open it in a browser, or: links · outline · model · single",
     ])
 
 

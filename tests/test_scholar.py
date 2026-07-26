@@ -20,8 +20,17 @@ from htmldrill.sources import scholar as SCH      # noqa: E402
 PROFILE = "https://scholar.google.com/citations?hl=en&user=ABC123&view_op=list_works&sortby=pubdate"
 
 
+def _row(i: int) -> str:
+    return (f'<tr class="gsc_a_tr"><td class="gsc_a_t">'
+            f'<a href="/citations?citation_for_view=ABC:{i}" class="gsc_a_at">Work {i}</a>'
+            f'<div class="gs_gray">A Author, B Author</div>'
+            f'<div class="gs_gray">Some Venue<span class="gs_oph">, {2000 + i}</span></div></td>'
+            f'<td class="gsc_a_c"><a class="gsc_a_ac gs_ibl">{i}</a></td>'
+            f'<td class="gsc_a_y"><span class="gsc_a_h gsc_a_hc gs_ibl">{2000 + i}</span></td></tr>')
+
+
 def _page(n_rows: int) -> str:
-    rows = "".join(f'<tr class="gsc_a_tr"><td>work {i}</td></tr>' for i in range(n_rows))
+    rows = "".join(_row(i) for i in range(n_rows))
     return f'<html><body><table><tbody id="gsc_a_b">{rows}</tbody></table></body></html>'
 
 
@@ -43,14 +52,17 @@ def test_recognises_scholar_profiles_only():
     assert not SCH.is_scholar_citations("not-a-url")
 
 
-def test_paginates_and_merges_all_works():
-    merged, total, pages = SCH.fetch_all_works(PROFILE, _paged_fetcher(315))
+def test_paginates_and_builds_clean_list():
+    html, total, pages = SCH.fetch_all_works(PROFILE, _paged_fetcher(315))
     assert total == 315
     assert pages == 4                                   # 100+100+100+15
-    # every work row lands in the single merged document
-    assert len(re.findall(r'class="gsc_a_tr"', merged)) == 315
-    # merged into one tbody (not four concatenated documents)
-    assert merged.count('<tbody id="gsc_a_b">') == 1
+    # a CLEAN static list — one <li> per work, NO Scholar JS / "Show more" button
+    assert len(re.findall(r"<li ", html)) == 315
+    assert "gsc_a_tr" not in html and "gsc_bpr_more" not in html and "<script" not in html
+    # real fields extracted: title, id (citation key), year, absolute link
+    assert '<span class="title">Work 0</span>' in html
+    assert 'id="scholar-ABC-0"' in html
+    assert 'href="https://scholar.google.com/citations?citation_for_view=ABC:0"' in html
 
 
 def test_single_full_page_stops_after_one_fetch():
