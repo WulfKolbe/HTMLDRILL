@@ -24,8 +24,15 @@ SPEC = yaml.safe_load((ROOT / "src" / "htmldrill" / "pagekind.yaml").read_text("
 DIMS = list(SPEC["dimensions"])
 
 # a page with too little signal to determine delivery / locus / completeness
-UNDERDETERMINED_PAGE = ("<!doctype html><html><head><title>Note</title></head>"
-                        '<body><p>A short note.</p><a href="/a">a</a></body></html>')
+# thin static text AND script_ratio inside 0.25..0.5 — the only band in which a
+# fetched HTML page can still be underdetermined on `delivery` after dl.lowjs
+UNDERDETERMINED_PAGE = (
+    "<!doctype html><html><head><title>Note</title></head>\n<body>\n"
+    "<p>A short note. It says little, links nowhere in particular, and carries "
+    "no markers either way.</p>\n<script>\n"
+    '(function(){var p=document.querySelectorAll("p");'
+    'for(var i=0;i<p.length;i++){p[i].dataset.seen="1";}})();'
+    "\n</script>\n</body></html>\n")
 PROSE_PAGE = ("<!doctype html><html><head><title>Essay</title></head><body>"
               "<h1>Essay</h1><p>" + ("word " * 400) + "</p></body></html>")
 

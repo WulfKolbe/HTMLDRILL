@@ -211,13 +211,71 @@ def test_underdetermined_vectors_report_their_gaps_by_name():
 
 # -- a finding worth keeping visible ----------------------------------------
 
-def test_identity_is_measured_but_no_policy_row_consumes_it():
-    """`identity` is a declared dimension with rules and probes, but NO policy
-    row constrains it — so an unknown `identity` can never by itself make a
-    vector underdetermined. This is asserted, not assumed: if a future row
-    starts consuming identity, this test fails and the claim gets revisited."""
+def test_session_bound_identity_has_a_consequence_and_is_not_a_dead_dimension():
+    """`identity` used to be classified, probed for, and consumed by nothing.
+    It now earns its place: `session_bound` means re-running `fetch` will NOT
+    reproduce this snapshot, which contradicts htmldrill's premise that re-runs
+    are deterministic and cumulative. That deserves its own terminal."""
     consuming = [r["id"] for r in SPEC["policy"] if "identity" in r["when"]]
-    assert consuming == [], f"identity is now consumed by {consuming} — update the report"
-    determined_but_for_identity = {d: SPEC["dimensions"][d][0] for d in DIMS
-                                   if d != "identity"}
-    assert not PK.resolve(determined_but_for_identity).is_underdetermined
+    assert consuming == ["po.session"], f"identity is consumed by {consuming}"
+    plan = PK.resolve({d: SPEC["dimensions"][d][0] for d in DIMS if d != "identity"}
+                      | {"identity": "session_bound"})
+    assert plan.terminal == "RETRIEVED_VOLATILE"
+    assert plan.matched_row == "po.session"
+
+
+def test_a_session_bound_page_is_still_refused_when_it_is_also_walled():
+    """po.session must not shadow the refusal terminals — a session cookie on
+    an auth wall is still an auth wall."""
+    assert PK.resolve({"identity": "session_bound",
+                       "access": "auth_required"}).matched_row == "po.auth"
+    assert PK.resolve({"identity": "session_bound",
+                       "access": "blocked"}).matched_row == "po.blocked"
+    assert PK.resolve({"identity": "session_bound",
+                       "payload": "pdf"}).matched_row == "po.pdf"
+
+
+def test_blocked_is_unreachable_from_markup_alone():
+    """`access: blocked` may only come from an observed fetch-level refusal.
+    No combination of page markup can produce it."""
+    import htmldrill.detectors as DET
+    feats = DET.collect('<html><head><meta name="robots" content="noindex">'
+                        "</head><body>text</body></html>",
+                        {"content-type": "text/html", "x-robots-tag": "noindex"},
+                        "https://x.test/p", 200)
+    assert PK.classify(feats)["access"].value == "open"
+    with_verdict = DET.collect("<html><body>t</body></html>",
+                               {"content-type": "text/html"}, "https://x.test/p", 200,
+                               robots_txt_disallow=True)
+    assert PK.classify(with_verdict)["access"].value == "blocked"
+
+
+def test_po_session_shadows_1200_vectors_including_every_consent_wall():
+    """MEASURED CONSEQUENCE of placing po.session above the retrieval rows.
+
+    `identity` describes how REPRODUCIBLE a snapshot is; it does not describe
+    how to retrieve one. Sitting in the first-match-wins chain above po.consent
+    / po.infinite / po.paged / po.spa, it replaces the retrieval STRATEGY with
+    `static_parse` for every session-bound page — so a session-bound infinite
+    feed returns page one, and a session-bound SPA returns the empty shell.
+
+    Counted exhaustively so the cost of the placement is a number, not an
+    opinion. If po.session moves (or volatility becomes an annotation on the
+    matched row rather than a competing row), this test fails and gets revisited."""
+    dims = list(SPEC["dimensions"])
+    value_sets = [[v for v in SPEC["dimensions"][d] if v != "unknown"] for d in dims]
+    shadowed = {}
+    for combo in itertools.product(*value_sets):
+        values = dict(zip(dims, combo))
+        if values["identity"] != "session_bound":
+            continue
+        row = PK.resolve(values).matched_row
+        if row != "po.session":
+            continue
+        without = dict(values, identity="stable")
+        shadowed[PK.resolve(without).matched_row] = \
+            shadowed.get(PK.resolve(without).matched_row, 0) + 1
+    assert sum(shadowed.values()) == 1200
+    assert shadowed["po.consent"] == 600, "consent walls are the largest bucket lost"
+    for strategy in ("po.spa", "po.infinite", "po.paged", "po.windowed"):
+        assert shadowed[strategy] > 0, f"{strategy} is shadowed too"

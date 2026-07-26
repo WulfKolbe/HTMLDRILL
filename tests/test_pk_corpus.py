@@ -136,6 +136,43 @@ def test_the_underdetermined_page_does_not_guess_a_delivery():
     assert vector["delivery"].rule_id == "dl.default"
 
 
+# -- MEASURED CONSEQUENCE of dl.lowjs, kept as a test rather than a paragraph --
+
+def test_dl_lowjs_claims_a_delivery_for_a_page_with_no_content_at_all():
+    """`dl.lowjs` fires on {fw_marker: false, script_ratio < 0.25}. A page with
+    no scripts has ratio 0.0, so an EMPTY document satisfies it and is reported
+    `static` at confidence 0.5, routed to a RETRIEVED terminal.
+
+    A ratio is only scale-free where its denominator is meaningful. Over ~13
+    characters of markup, script_ratio measures nothing — so this rule converts
+    "no evidence" into a confident value, which is the failure mode the whole
+    lattice exists to remove, wearing a ratio instead of a magic number.
+
+    Asserted so the defect is visible and so fixing it FAILS here rather than
+    passing silently. Not a rule I invented a threshold to paper over."""
+    empty = PK.classify(D.collect("<html></html>", *HTML_200, "https://x.test/p"))
+    assert empty["delivery"].value == "static"
+    assert empty["delivery"].rule_id == "dl.lowjs"
+    assert PK.resolve(empty).terminal == "RETRIEVED"
+
+
+def test_the_underdetermined_region_survives_only_as_a_script_ratio_band():
+    """After dl.lowjs, a fetched HTML page can only be underdetermined on
+    `delivery` inside 0.25 <= script_ratio < 0.5 with thin text. Below 0.25 it
+    is `static` (dl.lowjs), at/above 0.5 it is `client_rendered` (dl.thinshell).
+    The corpus fixture sits in that band deliberately."""
+    def delivery_at(script_len):
+        # static text deliberately < 200 chars, so the thin-text precondition of
+        # dl.thinshell holds and only script_ratio decides
+        html = ("<!doctype html><html><head><title>N</title></head><body>"
+                "<p>A short note.</p><script>" + "x" * script_len
+                + "</script></body></html>")
+        return PK.classify(D.collect(html, *HTML_200, "https://x.test/p"))["delivery"].value
+    assert delivery_at(0) == "static"                     # ratio 0.00 -> dl.lowjs
+    assert delivery_at(60) == "unknown"                   # ratio ~0.36 -> the band
+    assert delivery_at(4000) == "client_rendered"         # ratio ~0.97 -> dl.thinshell
+
+
 def test_the_original_defect_does_not_reproduce_on_the_corpus():
     """A page with NO recognised framework, thin static text and script-dominated
     markup is client_rendered. Under the old rule (`fw != "none detected" and

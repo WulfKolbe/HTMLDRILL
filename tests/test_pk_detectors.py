@@ -85,8 +85,10 @@ def test_collect_never_raises_on_hostile_markup():
 
 # -- (b) each detector against a fixture that should trip it ------------------
 
-def _obs(html="", headers=None, url="", status=None, rendered_html=None):
-    return D.Observation(html, headers, url, status, rendered_html)
+def _obs(html="", headers=None, url="", status=None, rendered_html=None,
+         robots_txt_disallow=None):
+    return D.Observation(html, headers, url, status, rendered_html,
+                         robots_txt_disallow)
 
 
 def one(feature: str, **kw):
@@ -132,12 +134,17 @@ def test_session_and_identity_detectors():
 
 
 def test_access_detectors():
-    assert one("robots_disallow", headers={"X-Robots-Tag": "noindex"}) is True
-    assert one("robots_disallow",
+    # `noindex` is an INDEXING directive and must NOT reach access=blocked.
+    # Silently refusing a retrievable page is a worse failure than a wrong
+    # verdict, because the refusal reads as correctness.
+    assert one("robots_txt_disallow", headers={"X-Robots-Tag": "noindex"}) is D.NOT_OBSERVED
+    assert one("robots_txt_disallow",
                html='<html><head><meta name="robots" content="noindex,nofollow">'
-                    '</head><body>b</body></html>') is True
-    assert one("robots_disallow", html=PAGE) is False
-    assert one("robots_disallow") is D.NOT_OBSERVED
+                    '</head><body>b</body></html>') is D.NOT_OBSERVED
+    assert one("robots_txt_disallow") is D.NOT_OBSERVED
+    # only an explicit fetch-level verdict determines it
+    assert one("robots_txt_disallow", robots_txt_disallow=True) is True
+    assert one("robots_txt_disallow", robots_txt_disallow=False) is False
     assert one("consent_marker",
                html='<html><body><div id="onetrust-banner-sdk">x</div></body></html>') is True
     assert one("consent_marker", html=PAGE) is False
@@ -225,3 +232,77 @@ def test_every_detector_has_at_least_one_positive_fixture():
     src = Path(__file__).read_text("utf-8")
     untested = {n for n in covered if f'"{n}"' not in src}
     assert not untested, f"features with no fixture in this file: {sorted(untested)}"
+
+
+# -- the substring pre-filter must be a pure optimisation --------------------
+
+PREFILTERED = [
+    ("consent_marker", "_CONSENT_TOKENS", "_CONSENT"),
+    ("login_form", "_LOGIN_TOKENS", "_LOGIN"),
+    ("scroll_sentinel", "_SCROLL_SENTINEL_TOKENS", "_SCROLL_SENTINEL"),
+    ("role_feed", "_ROLE_FEED_TOKENS", "_ROLE_FEED"),
+    ("pager_controls", "_PAGER_TOKENS", "_PAGER"),
+    ("lazy_media", "_LAZY_TOKENS", "_LAZY"),
+    ("embedded_viewer", "_VIEWER_TOKENS", "_VIEWER"),
+]
+
+CORPUS_PAGES = sorted((ROOT / "tests").rglob("*.html"))
+
+
+def test_prefilter_never_changes_a_verdict():
+    """`_hit` skips the regex when no necessary token is present. A token that
+    is not truly necessary would silently turn a real match into False — the
+    exact failure class this module exists to prevent. So every guarded pattern
+    is re-run UNGUARDED over every corpus page and the two must agree."""
+    assert CORPUS_PAGES, "no corpus pages found — this test would be vacuous"
+    disagreements = []
+    for page in CORPUS_PAGES:
+        html = page.read_text("utf-8", errors="replace")
+        obs = D.Observation(html, {"content-type": "text/html"}, "https://x.test/p", 200)
+        for feature, _tokens, pattern_name in PREFILTERED:
+            pattern = getattr(D, pattern_name)
+            guarded = D.REGISTRY[feature](obs)
+            unguarded = bool(pattern.search(html))
+            if guarded != unguarded:
+                disagreements.append(f"{page.name}:{feature} guarded={guarded} raw={unguarded}")
+    assert not disagreements, "\n".join(disagreements)
+
+
+def test_prefilter_agrees_on_adversarial_inputs_that_only_the_regex_can_judge():
+    """Corpus pages mostly DON'T match; that direction is easy. These inputs
+    contain a guard token but must still be judged by the pattern itself."""
+    cases = [
+        ("consent_marker", "<html><body>I ate a cookie yesterday.</body></html>", False),
+        ("consent_marker", '<html><body><div class="cookie-banner">x</div></body></html>', True),
+        ("login_form", "<html><body><p>password strength advice</p></body></html>", False),
+        ("login_form", '<html><body><input type="password"></body></html>', True),
+        ("role_feed", "<html><body><p>an RSS feed</p></body></html>", False),
+        ("role_feed", '<html><body><div role="feed"></div></body></html>', True),
+        # the token "page=" is present, so the guard defers to the pattern —
+        # which requires [?&]page=<digits> and correctly declines
+        ("pager_controls", "<html><body><p>turn the page=here</p></body></html>", False),
+        ("pager_controls", '<html><body><a href="/x?page=2">2</a></body></html>', True),
+        ("embedded_viewer", "<html><body><p>a pdf is a document</p></body></html>", False),
+        ("embedded_viewer", '<html><body><iframe src="/a.pdf"></iframe></body></html>', True),
+        ("lazy_media", "<html><body><p>a lazy afternoon</p></body></html>", False),
+        ("lazy_media", '<html><body><img src="a" loading="lazy"></body></html>', True),
+        ("scroll_sentinel", "<html><body><p>the sentinel watched</p></body></html>", False),
+        ("scroll_sentinel", '<html><body><div class="infinite-scroll"></div></body></html>', True),
+    ]
+    for feature, html, expected in cases:
+        obs = D.Observation(html, {"content-type": "text/html"}, "https://x.test/p", 200)
+        assert D.REGISTRY[feature](obs) is expected, f"{feature} on {html[:50]!r}"
+
+
+def test_framework_prefilter_agrees_with_the_unguarded_scan():
+    import re as _re
+    for page in CORPUS_PAGES:
+        html = page.read_text("utf-8", errors="replace")
+        raw = [n for n, p in D._FRAMEWORK_PATTERNS if _re.search(p, html, _re.I)]
+        guarded = D.guess_framework(html)
+        expected = ", ".join(raw) if raw else "none detected"
+        assert guarded == expected, f"{page.name}: {guarded!r} vs {expected!r}"
+
+
+def test_every_framework_pattern_has_a_token_tuple():
+    assert len(D._FRAMEWORK_TOKENS) == len(D._FRAMEWORK_PATTERNS)

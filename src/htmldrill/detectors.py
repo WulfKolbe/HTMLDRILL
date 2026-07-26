@@ -63,18 +63,22 @@ class Observation:
     """The raw material every detector reads. Nothing derived, nothing decided."""
 
     __slots__ = ("html", "headers", "url", "status", "rendered_html",
-                 "_collected", "_text", "_splits")
+                 "robots_txt_disallow",
+                 "_collected", "_text", "_splits", "_lower")
 
     def __init__(self, html: str | None, headers: dict | None, url: str | None,
-                 status: int | None, rendered_html: str | None = None) -> None:
+                 status: int | None, rendered_html: str | None = None,
+                 robots_txt_disallow: bool | None = None) -> None:
         self.html = html or ""
         self.headers = {str(k).lower(): v for k, v in (headers or {}).items()}
         self.url = url or ""
         self.status = status
         self.rendered_html = rendered_html
+        self.robots_txt_disallow = robots_txt_disallow
         self._collected: Any = None
         self._text: Any = None
         self._splits: Any = None
+        self._lower: Any = None
 
     # Each of these is a full pass over the markup. On a large input (the
     # codebase's own worked example is a 62MB export) running them per-detector
@@ -96,6 +100,13 @@ class Observation:
         return self._text
 
     @property
+    def lower(self) -> str:
+        """The markup lowercased once, for cheap substring pre-filtering."""
+        if self._lower is None:
+            self._lower = self.html.lower()
+        return self._lower
+
+    @property
     def splits(self) -> list:
         """The split/hidden-content occurrences, detected once."""
         if self._splits is None:
@@ -113,6 +124,26 @@ class Observation:
     @property
     def has_html(self) -> bool:
         return bool(self.html.strip())
+
+
+def _hit(o: Observation, tokens: tuple[str, ...], pattern: "re.Pattern") -> bool:
+    """`pattern.search(html)` behind a necessary-condition substring guard.
+
+    Every token is a lowercased substring that the pattern CANNOT match without.
+    A plain `in` scan is C-speed and short-circuits; the regex only runs when a
+    token is actually present. On a 12MB page this is the difference between
+    ~19 full-document regex scans and a handful.
+
+    The guard is a correctness risk in exactly one direction — a token that is
+    not truly necessary would turn a real match into a silent False, which is
+    the failure class this module exists to prevent. So it is not taken on
+    faith: `test_prefilter_never_changes_a_verdict` re-runs every pattern
+    unguarded over the whole corpus and asserts the two agree.
+    """
+    lower = o.lower
+    if not any(t in lower for t in tokens):
+        return False
+    return bool(pattern.search(o.html))
 
 
 REGISTRY: dict[str, Callable[[Observation], Any]] = {}
@@ -218,21 +249,23 @@ def _query_significant(o: Observation):
     return any(p not in _TRACKING_PARAMS for p in params)
 
 
-_ROBOTS_BLOCK = re.compile(r"\b(noindex|none)\b", re.I)
+@detector("robots_txt_disallow")
+def _robots_txt_disallow(o: Observation):
+    """Did a FETCH-LEVEL refusal actually happen for this URL?
 
+    Deliberately NOT the `noindex` meta tag. `noindex` is an INDEXING directive;
+    it says nothing about whether the resource may be retrieved. Routing it to
+    access=blocked made htmldrill silently refuse pages it could read perfectly
+    well — a worse failure than the verdict bug this lattice replaces, because
+    a refusal looks like correctness.
 
-@detector("robots_disallow")
-def _robots_disallow(o: Observation):
-    hdr = o.header("x-robots-tag")
-    if hdr and _ROBOTS_BLOCK.search(hdr):
-        return True
-    if o.has_html:
-        meta = H.extract_meta(o.collected)
-        directive = meta.get("robots") or ""
-        if directive:
-            return bool(_ROBOTS_BLOCK.search(directive))
-        return False
-    return NOT_OBSERVED if hdr is None else False
+    htmldrill does not fetch robots.txt, so absent an explicit verdict from
+    `probe_robots` this is NOT_OBSERVED and `ac.robots` cannot fire. That is the
+    intended state: `blocked` is reachable only from evidence, never from a hint.
+    """
+    if o.robots_txt_disallow is None:
+        return NOT_OBSERVED
+    return bool(o.robots_txt_disallow)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +300,18 @@ _FRAMEWORK_PATTERNS = [
 ]
 
 
+#: necessary lowercased substrings per framework pattern, same order
+_FRAMEWORK_TOKENS = [
+    ("__next_data__", "/_next/static/"),
+    ("__nuxt__",),
+    ("data-reactroot", "react-dom", "__react_devtools"),
+    ("data-v-", "__vue__", "vue.runtime"),
+    ("ng-version", "_nghost-", "ng-app"),
+    ("svelte-",),
+    ("tiddlywiki", "storearea"),
+]
+
+
 def guess_framework(html: str) -> str:
     """The human-readable framework list, or ``"none detected"``.
 
@@ -274,7 +319,9 @@ def guess_framework(html: str) -> str:
     means "no marker in THIS pattern list matched", which is precisely why it
     may not be used on its own to decide whether a page needs rendering.
     """
-    hits = [name for name, p in _FRAMEWORK_PATTERNS if re.search(p, html, re.I)]
+    lower = html.lower()
+    hits = [name for (name, p), toks in zip(_FRAMEWORK_PATTERNS, _FRAMEWORK_TOKENS)
+            if any(t in lower for t in toks) and re.search(p, html, re.I)]
     return ", ".join(hits) if hits else "none detected"
 
 
@@ -331,12 +378,14 @@ _VIEWER = re.compile(
     r"<iframe\b[^>]*(\.pdf|/viewer|viewerng|docs\.google\.com/(viewer|gview))|"
     r"pdfjs[-.]?(dist|viewer)|id=[\"']viewerContainer[\"']", re.I)
 
+_VIEWER_TOKENS = ("pdf", "/viewer", "viewerng", "gview", "viewercontainer")
+
 
 @detector("embedded_viewer")
 def _embedded_viewer(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return bool(_VIEWER.search(o.html))
+    return _hit(o, _VIEWER_TOKENS, _VIEWER)
 
 
 @detector("jsonld_blocks")
@@ -358,24 +407,30 @@ _CONSENT = re.compile(
     r"cmpbox|sp_message_container|cookie[-_ ]?(consent|banner|notice|wall)|"
     r"gdpr[-_ ]?(consent|banner)|consent[-_ ]?manager", re.I)
 
+_CONSENT_TOKENS = ("onetrust", "ot-sdk", "cookiebot", "trustarc", "truste", "didomi",
+            "usercentrics", "quantcast", "cmpbox", "sp_message_container", "cookie",
+            "gdpr", "consent")
+
 
 @detector("consent_marker")
 def _consent_marker(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return bool(_CONSENT.search(o.html))
+    return _hit(o, _CONSENT_TOKENS, _CONSENT)
 
 
 _LOGIN = re.compile(
     r"<input\b[^>]*type\s*=\s*[\"']?password|<input\b[^>]*name\s*=\s*[\"']?password|"
     r"<form\b[^>]*action\s*=\s*[\"'][^\"']*/(login|signin|sign-in|session|auth)\b", re.I)
 
+_LOGIN_TOKENS = ("password", "login", "signin", "sign-in", "/session", "/auth")
+
 
 @detector("login_form")
 def _login_form(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return bool(_LOGIN.search(o.html))
+    return _hit(o, _LOGIN_TOKENS, _LOGIN)
 
 
 _SOFT_ERROR = re.compile(
@@ -403,22 +458,26 @@ _SCROLL_SENTINEL = re.compile(
     r"(id|class)\s*=\s*[\"'][^\"']*\bsentinel\b|loadMoreOnScroll|"
     r"data-infinite", re.I)
 
+_SCROLL_SENTINEL_TOKENS = ("sentinel", "infinite", "loadmoreonscroll")
+
 
 @detector("scroll_sentinel")
 def _scroll_sentinel(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return bool(_SCROLL_SENTINEL.search(o.html))
+    return _hit(o, _SCROLL_SENTINEL_TOKENS, _SCROLL_SENTINEL)
 
 
 _ROLE_FEED = re.compile(r"\brole\s*=\s*[\"']?feed\b", re.I)
+
+_ROLE_FEED_TOKENS = ("feed",)
 
 
 @detector("role_feed")
 def _role_feed(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return bool(_ROLE_FEED.search(o.html))
+    return _hit(o, _ROLE_FEED_TOKENS, _ROLE_FEED)
 
 
 _REL_NEXT_ANCHOR = re.compile(r"<a\b[^>]*\brel\s*=\s*[\"']?[^\"'>]*\bnext\b", re.I)
@@ -431,7 +490,7 @@ def _rel_next(o: Observation):
     for link in o.collected.links_rel:
         if "next" in (link.get("rel") or "").lower().split():
             return True
-    return bool(_REL_NEXT_ANCHOR.search(o.html))
+    return _hit(o, ("next",), _REL_NEXT_ANCHOR)
 
 
 _PAGER = re.compile(
@@ -439,24 +498,28 @@ _PAGER = re.compile(
     r"aria-label\s*=\s*[\"'][^\"']*\bpagination\b|"
     r"\brel\s*=\s*[\"']?prev\b|[?&]page=\d+", re.I)
 
+_PAGER_TOKENS = ("pagination", "pager", "page-numbers", "prev", "page=")
+
 
 @detector("pager_controls")
 def _pager_controls(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return bool(_PAGER.search(o.html))
+    return _hit(o, _PAGER_TOKENS, _PAGER)
 
 
 _LAZY = re.compile(
     r"<(img|iframe)\b[^>]*loading\s*=\s*[\"']?lazy|"
     r"<img\b[^>]*\bdata-(src|srcset|original)\s*=", re.I)
 
+_LAZY_TOKENS = ("lazy", "data-src", "data-original")
+
 
 @detector("lazy_media")
 def _lazy_media(o: Observation):
     if not o.has_html:
         return NOT_OBSERVED
-    return bool(_LAZY.search(o.html))
+    return _hit(o, _LAZY_TOKENS, _LAZY)
 
 
 @detector("collapsed_bodies")
@@ -526,8 +589,8 @@ def _render_delta_chars(o: Observation):
 # ---------------------------------------------------------------------------
 
 def collect(html: str | None, headers: dict | None = None, url: str | None = None,
-            status: int | None = None, *, rendered_html: str | None = None
-            ) -> dict[str, Any]:
+            status: int | None = None, *, rendered_html: str | None = None,
+            robots_txt_disallow: bool | None = None) -> dict[str, Any]:
     """Run every registered detector once. Total: always returns one entry per
     registered feature id, never raises.
 
@@ -535,7 +598,7 @@ def collect(html: str | None, headers: dict | None = None, url: str | None = Non
     explicit demotion to not-measured, not a swallowed error that would let a
     missing observation read as a negative finding.
     """
-    obs = Observation(html, headers, url, status, rendered_html)
+    obs = Observation(html, headers, url, status, rendered_html, robots_txt_disallow)
     out: dict[str, Any] = {}
     for feature_id, fn in REGISTRY.items():
         try:
