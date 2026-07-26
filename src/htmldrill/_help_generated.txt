@@ -10,6 +10,8 @@ Fetch (network):
 Known-host routing (network):
   htmldrill arxiv                             Recognise an arXiv URL/id; read title/authors/abstract/category from the abs page for free and surface the pdf + e-print LaTeX routes (--pdf/--source download them). Records ARXIV_KNOWN.
   htmldrill scholar                           Recognise a Google Scholar profile and fetch EVERY page of works past the "Show more" wall via cstart/pagesize URL pagination (no browser, no clicks), merged into one raw.html snapshot. Records FETCHED + SCHOLAR.
+  htmldrill orcid                             Recognise an ORCID record (or bare id) and fetch EVERY work from the public JSON API (pub.orcid.org — one call, no "Show more" button), synthesised into a works-list snapshot. Records FETCHED + ORCID.
+  htmldrill semanticscholar                   Recognise a Semantic Scholar author and fetch EVERY paper via the Graph API (offset/limit pagination, no browser), synthesised into a works-list snapshot. Records FETCHED + SEMANTIC_SCHOLAR.
 
 Routing (offline):
   htmldrill route                             Classify a URL and name the *drill tool that should handle it — pdfdrill (arXiv/PDF), YTDRILL (video), CHATDRILL (auth-gated chat like perplexity/chatgpt shares), or htmldrill (ordinary pages). A clear verdict, offline, no fetch. Modular host registry (lifts into anydrill).

@@ -22,7 +22,9 @@ from typing import Callable, Optional
 from urllib.parse import urlparse
 
 from .known_hosts import host_of, is_url, known_host, parse_arxiv_id
+from .orcid import is_orcid
 from .scholar import is_scholar_citations
+from .semanticscholar import is_s2_author
 
 
 @dataclass(frozen=True)
@@ -102,6 +104,28 @@ def _rule_scholar(url: str) -> Optional[Verdict]:
     return None
 
 
+def _rule_orcid(url: str) -> Optional[Verdict]:
+    if is_orcid(url):
+        return Verdict(
+            "htmldrill", "htmldrill",
+            "ORCID record — works load from the public API behind a 'Show more' "
+            "button; the API returns the whole list in one call",
+            "htmldrill orcid <url>  (fetches every work via pub.orcid.org)",
+            rule="orcid", known=True)
+    return None
+
+
+def _rule_semanticscholar(url: str) -> Optional[Verdict]:
+    if is_s2_author(url):
+        return Verdict(
+            "htmldrill", "htmldrill",
+            "Semantic Scholar author — a paged paper list; the Graph API returns "
+            "every paper via offset/limit (no browser clicks)",
+            "htmldrill semanticscholar <url>  (fetches every paper via the Graph API)",
+            rule="semanticscholar", known=True)
+    return None
+
+
 def _rule_chat(url: str) -> Optional[Verdict]:
     prefixes = _CHAT_HOSTS.get(_bare_host(url))
     if prefixes is None:
@@ -118,7 +142,9 @@ def _rule_chat(url: str) -> Optional[Verdict]:
 
 #: ordered rule registry — first match wins. Append to extend.
 RULES: list[Callable[[str], Optional[Verdict]]] = [
-    _rule_arxiv, _rule_pdf, _rule_video, _rule_scholar, _rule_chat,
+    _rule_arxiv, _rule_pdf, _rule_video,
+    _rule_scholar, _rule_orcid, _rule_semanticscholar,
+    _rule_chat,
 ]
 
 

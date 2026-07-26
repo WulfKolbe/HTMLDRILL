@@ -42,6 +42,18 @@ commands:
     network: true
     done_when: fact:SCHOLAR
 
+  - name: orcid
+    section: Known-host routing (network)
+    summary: Recognise an ORCID record (or bare id) and fetch EVERY work from the public JSON API (pub.orcid.org — one call, no "Show more" button), synthesised into a works-list snapshot. Records FETCHED + ORCID.
+    network: true
+    done_when: fact:ORCID
+
+  - name: semanticscholar
+    section: Known-host routing (network)
+    summary: Recognise a Semantic Scholar author and fetch EVERY paper via the Graph API (offset/limit pagination, no browser), synthesised into a works-list snapshot. Records FETCHED + SEMANTIC_SCHOLAR.
+    network: true
+    done_when: fact:SEMANTIC_SCHOLAR
+
   # -- Routing (offline) — which *drill tool should handle this URL --
   - name: route
     section: Routing (offline)

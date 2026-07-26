@@ -76,6 +76,8 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 |---|---|
 | `htmldrill arxiv` | Recognise an arXiv URL/id; read title/authors/abstract/category from the abs page for free and surface the pdf + e-print LaTeX routes (--pdf/--source download them). Records ARXIV_KNOWN. _(network)_ |
 | `htmldrill scholar` | Recognise a Google Scholar profile and fetch EVERY page of works past the "Show more" wall via cstart/pagesize URL pagination (no browser, no clicks), merged into one raw.html snapshot. Records FETCHED + SCHOLAR. _(network)_ |
+| `htmldrill orcid` | Recognise an ORCID record (or bare id) and fetch EVERY work from the public JSON API (pub.orcid.org — one call, no "Show more" button), synthesised into a works-list snapshot. Records FETCHED + ORCID. _(network)_ |
+| `htmldrill semanticscholar` | Recognise a Semantic Scholar author and fetch EVERY paper via the Graph API (offset/limit pagination, no browser), synthesised into a works-list snapshot. Records FETCHED + SEMANTIC_SCHOLAR. _(network)_ |
 
 ### Routing (offline)
 

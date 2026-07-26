@@ -94,6 +94,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
     p.set_defaults(cmd="scholar")
 
+    # orcid / semanticscholar — fetch every work from the public API (no browser)
+    for name, helptext in {
+        "orcid": "fetch every work of an ORCID record via the public JSON API",
+        "semanticscholar": "fetch every paper of a Semantic Scholar author via the Graph API",
+    }.items():
+        p = sub.add_parser(name, help=helptext)
+        url_arg(p); work_arg(p)
+        p.add_argument("--force", action="store_true", help=f"re-fetch even if cached")
+        p.add_argument("--ua", help="override User-Agent")
+        p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
+        p.set_defaults(cmd=name)
+
     # route — classify a URL: which *drill tool should handle it (offline, no fetch)
     p = sub.add_parser("route",
                        help="name the *drill tool that should handle a URL "

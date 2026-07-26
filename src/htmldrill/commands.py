@@ -32,7 +32,9 @@ from .sources import fetch as F
 from .sources import inline as INLINE
 from .sources import known_hosts as K
 from .sources import monolith as MONO
+from .sources import orcid as ORC
 from .sources import scholar as SCH
+from .sources import semanticscholar as S2
 from .sources import print_pdf as P
 from .sources import render as R
 
@@ -61,6 +63,9 @@ SINGLE = "SINGLE"
 ARXIV_KNOWN = "ARXIV_KNOWN"
 # L0/known-host (scholar — paginate past the "Show more" wall, merge all works)
 SCHOLAR = "SCHOLAR"
+# L0/known-host (orcid / semantic scholar — fetch every work via the public API)
+ORCID = "ORCID"
+SEMANTIC_SCHOLAR = "SEMANTIC_SCHOLAR"
 # L5 (model)
 MODEL_BUILT = "MODEL_BUILT"
 # L6 (projectors — offline)
@@ -246,24 +251,90 @@ def cmd_scholar(ctx: Ctx) -> str:
         return (f"Fetched {pages} page(s) but found no work rows — Scholar may have "
                 f"served a robot check, or the profile is empty/private.")
 
-    sc.write_blob("raw.html", merged)
-    sc.write_blob("headers.json", json.dumps({"x-htmldrill": "scholar-merged"}, indent=2))
-    sc.set_evidence("url", ctx.url)
-    sc.set_evidence("final_url", ctx.url)
-    sc.set_evidence("status", 200)
-    sc.set_evidence("content_type", "text/html")
-    sc.set_evidence("content_kind", "html")
-    sc.set_evidence("raw_blob", "raw.html")
-    sc.set_evidence("bytes", len(merged.encode("utf-8", "replace")))
-    sc.set_evidence("scholar_entries", total)
-    sc.set_evidence("scholar_pages", pages)
-    sc.set_layer("raw_html", {"path": "raw.html", "format": "text/html"})
-    sc.add_fact(FETCHED)
+    _store_html_snapshot(sc, ctx.url, merged,
+                         {"scholar_entries": total, "scholar_pages": pages})
     sc.add_fact(SCHOLAR)
     sc.log_transition("scholar", _prev(sc, SCHOLAR), SCHOLAR, cost_ms,
                       f"{total} works merged from {pages} page(s)")
     sc.save()
     return _scholar_report(sc, cached=False)
+
+
+def _store_html_snapshot(sc: Sidecar, url: str, html: str, evidence: dict) -> None:
+    """Persist a synthesised HTML document as a normal FETCHED snapshot, so every
+    downstream command (size/links/outline/model/single) consumes it unchanged.
+    Shared by the known-host works-list routes (scholar/orcid/semanticscholar)."""
+    sc.write_blob("raw.html", html)
+    sc.write_blob("headers.json", json.dumps({"x-htmldrill": "known-host-synth"}, indent=2))
+    sc.set_evidence("url", url)
+    sc.set_evidence("final_url", url)
+    sc.set_evidence("status", 200)
+    sc.set_evidence("content_type", "text/html")
+    sc.set_evidence("content_kind", "html")
+    sc.set_evidence("raw_blob", "raw.html")
+    sc.set_evidence("bytes", len(html.encode("utf-8", "replace")))
+    for k, v in evidence.items():
+        sc.set_evidence(k, v)
+    sc.set_layer("raw_html", {"path": "raw.html", "format": "text/html"})
+    sc.add_fact(FETCHED)
+
+
+def cmd_orcid(ctx: Ctx) -> str:
+    """Recognise an ORCID record and fetch EVERY work from the public JSON API
+    (one call — the API returns the whole grouped list; no browser, no "Show more"
+    button), synthesised into a works-list snapshot. Records FETCHED + ORCID."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill orcid <orcid-url-or-id>")
+    if not (ORC.is_orcid(ctx.url) or ORC.orcid_id(ctx.url)):
+        return f"{ctx.url} carries no ORCID id (expected 0000-0000-0000-0000)."
+    sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    if sc.has(ORCID) and sc.has_blob("raw.html") and not ctx.force:
+        return _works_report(sc, "orcid", cached=True)
+    t0 = time.perf_counter()
+    html, total = ORC.fetch_all_works(ctx.url, ORC.default_json_fetch(ctx.timeout, ctx.ua))
+    cost_ms = (time.perf_counter() - t0) * 1000
+    _store_html_snapshot(sc, ctx.url, html, {"works_entries": total, "works_pages": 1})
+    sc.add_fact(ORCID)
+    sc.log_transition("orcid", _prev(sc, ORCID), ORCID, cost_ms, f"{total} works")
+    sc.save()
+    return _works_report(sc, "orcid", cached=False)
+
+
+def cmd_semanticscholar(ctx: Ctx) -> str:
+    """Recognise a Semantic Scholar author and fetch EVERY paper via the Graph API
+    (offset/limit pagination — no browser), synthesised into a works-list snapshot.
+    Records FETCHED + SEMANTIC_SCHOLAR."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill semanticscholar <author-url-or-id>")
+    if not (S2.is_s2_author(ctx.url) or S2.author_id(ctx.url)):
+        return f"{ctx.url} carries no Semantic Scholar author id."
+    sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    if sc.has(SEMANTIC_SCHOLAR) and sc.has_blob("raw.html") and not ctx.force:
+        return _works_report(sc, "semanticscholar", cached=True)
+    t0 = time.perf_counter()
+    html, total, pages = S2.fetch_all_works(ctx.url, S2.default_json_fetch(ctx.timeout, ctx.ua))
+    cost_ms = (time.perf_counter() - t0) * 1000
+    _store_html_snapshot(sc, ctx.url, html, {"works_entries": total, "works_pages": pages})
+    sc.add_fact(SEMANTIC_SCHOLAR)
+    sc.log_transition("semanticscholar", _prev(sc, SEMANTIC_SCHOLAR), SEMANTIC_SCHOLAR,
+                      cost_ms, f"{total} papers from {pages} page(s)")
+    sc.save()
+    return _works_report(sc, "semanticscholar", cached=False)
+
+
+def _works_report(sc: Sidecar, name: str, cached: bool) -> str:
+    ev = sc.evidence
+    tag = f"cached {name}" if cached else name
+    n, pages = ev.get("works_entries", 0), ev.get("works_pages", 1)
+    src = "one API call" if pages <= 1 else f"{pages} API pages"
+    note = ("  (0 — the record has no public works via the API)" if n == 0 else "")
+    return "\n".join([
+        f"{tag} {ev.get('url')}",
+        f"  id:       {sc.local_id}",
+        f"  works:    {n} entries from {src}{note}",
+        f"  snapshot: {sc.blob_path('raw.html')}  ({ev.get('bytes')} bytes)",
+        f"  next: links · outline · model · single — all now see every work",
+    ])
 
 
 def _scholar_report(sc: Sidecar, cached: bool) -> str:
@@ -2065,6 +2136,8 @@ HANDLERS = {
     "fetch": cmd_fetch,
     "arxiv": cmd_arxiv,
     "scholar": cmd_scholar,
+    "orcid": cmd_orcid,
+    "semanticscholar": cmd_semanticscholar,
     "route": cmd_route,
     "size": cmd_size,
     "headers": cmd_headers,
