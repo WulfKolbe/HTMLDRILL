@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from . import detectors as DET
+from . import pagekind as PK
 from . import planner
 from .parse import html as H
 from .sidecar import Sidecar, resolve_local_id, work_root
@@ -76,6 +78,8 @@ LLMTEXT_BUILT = "LLMTEXT_BUILT"
 LATEX_BUILT = "LATEX_BUILT"
 # L4 (split recovery — lazy-load / virtualization)
 SPLITS_KNOWN = "SPLITS_KNOWN"
+# pagekind lattice (classify — the total state machine over 7 dimensions)
+PAGEKIND_KNOWN = "PAGEKIND_KNOWN"
 MATERIALIZED = "MATERIALIZED"
 # M5 (crawl / retrieve / chatlog)
 CRAWLED = "CRAWLED"
@@ -437,24 +441,13 @@ def cmd_arxiv(ctx: Ctx) -> str:
 
 # -- snapshot introspection (no network) -------------------------------------
 
-def _guess_framework(html: str) -> str:
-    # Patterns must be SPECIFIC markers (attributes/globals/generator meta), not
-    # bare words like "vue"/"angular" — those substring-match chat/JSON payloads
-    # and produce false positives (a 62MB ChatGPT export "is Vue + Angular";
-    # a TiddlyWiki "is Vue"). We also detect TiddlyWiki, the most common real input.
-    pats = [
-        ("Next.js", r"__NEXT_DATA__|/_next/static/"),
-        ("Nuxt", r"window\.__NUXT__"),
-        ("React", r"data-reactroot|react-dom\.production|__REACT_DEVTOOLS"),
-        ("Vue", r"data-v-[0-9a-f]{8}\b|__VUE__|vue\.runtime"),
-        ("Angular", r"\bng-version=|_nghost-|\bng-app="),
-        ("Svelte", r"\bsvelte-[0-9a-z]{6}\b"),
-        ("TiddlyWiki",
-         r'application-name"\s+content="TiddlyWiki"|tiddlywiki-tiddler-store|'
-         r'id="storeArea"|generator"\s+content="TiddlyWiki"'),
-    ]
-    hits = [name for name, p in pats if re.search(p, html, re.I)]
-    return ", ".join(hits) if hits else "none detected"
+#: The framework guess is now ONE FEATURE DETECTOR among many, living in
+#: detectors.py. It is re-exported here under its original private name so the
+#: `size` report keeps printing it — demoted from gatekeeper to observation,
+#: not deleted. Its "none detected" string may no longer decide anything on its
+#: own: that string means "no marker in the pattern list matched", which is not
+#: the same claim as "this page has no framework".
+_guess_framework = DET.guess_framework
 
 
 def cmd_size(ctx: Ctx) -> str:
@@ -463,23 +456,157 @@ def cmd_size(ctx: Ctx) -> str:
     nbytes = sc.get_evidence("bytes", len(html.encode("utf-8", "replace")))
     nlines = html.count("\n") + 1
     fw = _guess_framework(html)
-    visible_text = sum(len(t) for _, t in c.anchors) + sum(len(t) for _, t in c.headings)
-    # Shallow render-required heuristic: a framework shell with almost no static
-    # text/headings is probably JS-rendered (the OCR-analog escalation signal).
-    needs_render = bool(fw != "none detected" and len(c.headings) <= 1 and visible_text < 200)
+    # `needs_render` is DERIVED from the pagekind lattice, not guessed here. The
+    # old inline heuristic (`fw != "none detected" and thin`) could not tell an
+    # UNRECOGNISED framework from an ABSENT one, so every unfamiliar shell was
+    # confidently reported as "no render needed". delivery=client_rendered is
+    # reached by two independent routes — a known framework marker with thin
+    # static text (dl.shell), or thin static text dominated by script with the
+    # framework marker measured ABSENT (dl.thinshell) — and either may be false
+    # only when the evidence says so, never when the evidence is missing.
+    _, feats, _ = _snapshot_observation(ctx)
+    vector = PK.classify(feats)
+    delivery = vector["delivery"]
+    needs_render = delivery.value == "client_rendered"
     sc.set_evidence("tag_count", c.tag_count)
     sc.set_evidence("framework", fw)
     sc.set_evidence("needs_render", needs_render)
+    sc.set_evidence("delivery", delivery.value)
+    sc.set_evidence("delivery_rule", delivery.rule_id)
     sc.add_fact(SIZE_KNOWN)
     sc.log_transition("size", _prev(sc, SIZE_KNOWN), SIZE_KNOWN, 0,
-                      f"{nbytes}B {c.tag_count} tags fw={fw}")
+                      f"{nbytes}B {c.tag_count} tags fw={fw} delivery={delivery.value}")
     sc.save()
-    verdict = ("LIKELY JS-RENDERED — static markup is thin; `render` recommended (M1)"
-               if needs_render else "static markup looks sufficient — no render needed")
+    if needs_render:
+        verdict = "LIKELY JS-RENDERED — static markup is thin; `render` recommended (M1)"
+    elif delivery.value == "unknown":
+        verdict = ("UNDETERMINED — the static markup carries too little signal to "
+                   "say; `classify` names the next probe")
+    else:
+        verdict = "static markup looks sufficient — no render needed"
     return (f"{sc.local_id}: {nbytes} bytes, {nlines} lines, ~{c.tag_count} tags\n"
             f"  framework:  {fw}\n"
             f"  headings:   {len(c.headings)}   anchors: {len(c.anchors)}\n"
+            f"  delivery:   {delivery.value} (conf {delivery.confidence:.2f}, "
+            f"rule {delivery.rule_id})\n"
             f"  verdict:    {verdict}")
+
+
+def _snapshot_observation(ctx: Ctx) -> tuple[Sidecar, dict, str]:
+    """(sidecar, feature dict, source label) for the pagekind stages.
+
+    Deliberately NOT ``_load_snapshot``: that helper refuses anything whose
+    content_kind is not html, and a non-HTML payload is precisely one of the
+    verdicts the lattice exists to reach (``payload: pdf`` is a determined
+    result, not an error). Here a PDF snapshot classifies cleanly, from its
+    headers, with no markup at all.
+    """
+    sc = Sidecar(_resolve_id(ctx), work=ctx.work)
+    if not sc.has(FETCHED):
+        raise FileNotFoundError(
+            f"no fetched snapshot for {ctx.url!r} — run `htmldrill fetch {ctx.url}` "
+            f"first; `classify` is offline and won't fetch.")
+    raw_headers = sc.read_blob("headers.json")
+    headers = json.loads(raw_headers) if raw_headers else {}
+    if not headers and sc.get_evidence("content_type"):
+        # synthesised snapshots (orcid / scholar / semanticscholar) carry no
+        # headers blob; the evidence still records what was served
+        headers = {"content-type": sc.get_evidence("content_type")}
+    kind = sc.get_evidence("content_kind", "html")
+    html = (sc.read_blob("raw.html") or "") if kind == "html" else ""
+    source = "static"
+    rendered = None
+    if sc.has(CAPTURED) and sc.has_blob("captured.html"):
+        rendered, source = sc.read_blob("captured.html"), "captured"
+    elif sc.has(RENDERED) and sc.has_blob("rendered.html"):
+        rendered, source = sc.read_blob("rendered.html"), "rendered"
+    feats = DET.collect(html, headers, sc.get_evidence("final_url") or sc.get_evidence("url"),
+                        sc.get_evidence("status"), rendered_html=rendered)
+    return sc, feats, source
+
+
+def _capabilities_spent(sc: Sidecar) -> set[str]:
+    """Which lattice capabilities this target has ALREADY paid for.
+
+    Without this, an underdetermined verdict on a genuinely thin page proposes
+    `static_parse` — the very thing classification just did — because it is the
+    cheapest resolver of `delivery`. Naming a probe you already ran is the same
+    class of dishonesty as a confident wrong verdict, so the spent set is
+    subtracted and then REPORTED, not silently applied.
+    """
+    spent = {"static_parse", "structured_parse"}   # classification read the markup
+    if sc.has(FETCHED):
+        spent |= {"fetch", "probe_headers"}
+    if sc.has(RENDERED):
+        spent.add("render")
+    if sc.has(CAPTURED):
+        spent.add("capture_scroll")
+    if sc.has(PRINTED):
+        spent.add("print_pdf")
+    if sc.has(CRAWLED):
+        spent.add("crawl_pages")
+    if any(sc.has(f) for f in (ARXIV_KNOWN, SCHOLAR, ORCID, SEMANTIC_SCHOLAR)):
+        spent.add("known_host")
+    return spent
+
+
+def cmd_classify(ctx: Ctx) -> str:
+    """Classify the snapshot on the pagekind lattice (OFFLINE — no network).
+
+    Seven finite dimensions, each with `unknown` as a first-class value, then a
+    policy table lookup that yields either a retrieval plan or a determined
+    terminal. Nothing here is a page genre and nothing here is a branch: the
+    dimensions, the rules and the policy rows all live in ``pagekind.yaml``.
+
+    Every dimension prints the rule id that fired, so a verdict can be audited
+    against the data that produced it. Records PAGEKIND_KNOWN."""
+    sc, feats, source = _snapshot_observation(ctx)
+    vector = PK.classify(feats)
+    spent = _capabilities_spent(sc)
+    plan = PK.resolve(vector, exclude=spent)
+    spec = PK.load_spec()
+    row_note = next((r.get("note", "") for r in spec["policy"]
+                     if r["id"] == plan.matched_row), "")
+
+    sc.set_evidence("pagekind_source", source)
+    sc.set_evidence("pagekind", {dim: {"value": v.value, "conf": v.confidence,
+                                       "rule_id": v.rule_id}
+                                 for dim, v in vector.items()})
+    sc.set_evidence("pagekind_plan", list(plan.steps))
+    sc.set_evidence("pagekind_terminal", plan.terminal)
+    sc.set_evidence("pagekind_row", plan.matched_row)
+    sc.set_evidence("pagekind_unresolved", list(plan.unresolved_dims))
+    sc.set_evidence("pagekind_spent", sorted(spent))
+    sc.add_fact(PAGEKIND_KNOWN)
+    sc.log_transition("classify", _prev(sc, PAGEKIND_KNOWN), PAGEKIND_KNOWN, 0,
+                      f"{plan.terminal} via {plan.matched_row} from {source}")
+    sc.save()
+
+    width = max(len(d) for d in vector)
+    lines = [f"{sc.local_id}: pagekind vector (from the {source} snapshot)"]
+    for dim, v in vector.items():
+        lines.append(f"  {dim:<{width}}  {v.value:<16} conf {v.confidence:.2f}   "
+                     f"rule {v.rule_id}")
+    if plan.steps:
+        lines.append("  plan:       " + ", ".join(
+            f"{s} (cost {PK.capability_cost(s)})" for s in plan.steps))
+    else:
+        lines.append("  plan:       (no steps — the verdict is terminal)")
+    lines.append(f"  terminal:   {plan.terminal}   [row {plan.matched_row}]")
+    if row_note:
+        lines.append(f"  reason:     {row_note}")
+    if plan.unresolved_dims:
+        lines.append("  unresolved: " + ", ".join(plan.unresolved_dims))
+        if plan.is_underdetermined:
+            lines.append("              already spent: " + ", ".join(sorted(spent)))
+            lines.append(
+                f"              cheapest untried probe: `{plan.steps[0]}` "
+                f"(cost {PK.capability_cost(plan.steps[0])})" if plan.steps else
+                "              no untried probe remains — this page is as "
+                "determined as htmldrill can make it")
+    else:
+        lines.append("  unresolved: none — every dimension is determined")
+    return "\n".join(lines)
 
 
 def cmd_headers(ctx: Ctx) -> str:
@@ -2140,6 +2267,7 @@ HANDLERS = {
     "orcid": cmd_orcid,
     "semanticscholar": cmd_semanticscholar,
     "route": cmd_route,
+    "classify": cmd_classify,
     "size": cmd_size,
     "headers": cmd_headers,
     "meta": cmd_meta,

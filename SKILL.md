@@ -89,6 +89,7 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 
 | Command | Returns |
 |---|---|
+| `htmldrill classify` | Classify the snapshot on the pagekind lattice — seven finite dimensions (delivery, locus, completeness, access, identity, payload, richness), each printing the rule id that fired, then the retrieval plan or the determined terminal. `unknown` is a value, so an uncovered page reports UNDERDETERMINED and names its cheapest next probe instead of guessing. Records PAGEKIND_KNOWN. |
 | `htmldrill size` | Bytes, line/tag count, framework guess, and a static-vs-render verdict. |
 | `htmldrill headers` | The captured HTTP response headers, one per line. |
 | `htmldrill meta` | <meta> tags (charset, viewport, description, robots, author) and <title>. |

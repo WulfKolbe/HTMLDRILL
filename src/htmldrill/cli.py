@@ -3,6 +3,7 @@
 Shallow-first: start with the free L0 tier on a captured snapshot —
 
   htmldrill fetch   <url>                  # the only network step; snapshots raw HTML
+  htmldrill classify <url>                 # pagekind vector: 7 dimensions + plan/terminal
   htmldrill size    <url>                  # bytes/tags/framework + render-needed verdict
   htmldrill meta    <url>                  # <meta> + <title>
   htmldrill links   <url>                  # anchors + the invisible-URL killer case
@@ -115,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # snapshot introspection commands (uniform: <url> [--work] [--force] [--ensure])
     SNAP = {
+        "classify": "pagekind lattice vector + retrieval plan or terminal",
         "size": "bytes/tags/framework + static-vs-render verdict",
         "headers": "captured HTTP response headers",
         "meta": "<meta> tags + <title>",

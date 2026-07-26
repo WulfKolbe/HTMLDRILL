@@ -1,0 +1,8 @@
+<!doctype html><html><head><title>Stream</title></head>
+<body><h1>Stream</h1>
+<div class="post"><p>An opening item long enough to be counted as real static text rather than a placeholder.</p></div>
+<div class="post"><p>A second item, also of a reasonable length so the page is not classified as thin.</p></div>
+<div class="post"><p>A third item, continuing the pattern established by the two items above it.</p></div>
+<div id="sentinel" class="infinite-scroll-sentinel"></div>
+<script>new IntersectionObserver(loadMoreOnScroll).observe(document.getElementById('sentinel'))</script>
+</body></html>

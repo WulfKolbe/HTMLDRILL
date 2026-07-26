@@ -9,6 +9,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install pyyaml
+      # 0) the pagekind lattice is total (T1 rules, T2 policy, T3 probes)
+      - run: python3 tools/pagekind_validate.py
       # 1) manifest ↔ HANDLERS dict (static)
       - run: python3 tools/skillsync.py check .
       # 2) generated artifacts are committed & up to date (no dirty diff)

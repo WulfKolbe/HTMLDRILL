@@ -1,0 +1,186 @@
+# pagekind.yaml — the retrieval lattice. DATA, not code.
+#
+# Replaces the open-world string verdicts (_guess_framework -> "none detected",
+# needs_render bool, KNOWN_HOSTS) with a TOTAL classification over finite
+# dimensions, plus a policy table that names CAPABILITIES rather than code paths.
+#
+# The contract this file must satisfy (enforced by tests, not by review):
+#   T1  every dimension's rule list ends with an unconditional rule -> unknown
+#   T2  every FULLY-DETERMINED vector (no `unknown` component) matches a policy
+#       row that is NOT the catch-all
+#   T3  every vector with an `unknown` component resolves to a plan whose first
+#       step declares that dimension in its `resolves:` set
+#
+# Adding a new page genre is a ROW here. It is never a branch in Python.
+version: 1
+
+# ---------------------------------------------------------------------------
+# Dimensions. Closed value sets. `unknown` is a VALUE, not an absence.
+# ---------------------------------------------------------------------------
+dimensions:
+  delivery:      [static, templated, client_rendered, hydrated, non_html, unknown]
+  locus:         [markup, rendered_dom, structured_data, external_resource, api, unknown]
+  completeness:  [complete, collapsed, deferred, paginated, infinite, windowed, unknown]
+  access:        [open, consent_wall, auth_required, rate_limited, blocked, unknown]
+  identity:      [stable, query_dependent, session_bound, unknown]
+  payload:       [html, pdf, feed, json, image, archive, other, unknown]
+  richness:      [prose, records, media, hub, thin, error, unknown]
+
+# ---------------------------------------------------------------------------
+# Capabilities. The escalation ladder, cost-ordered. Policy names these.
+# `resolves:` is what running the step is expected to DETERMINE (drives T3).
+# ---------------------------------------------------------------------------
+capabilities:
+  probe_headers:    {cost: 1, network: true,  resolves: [access, payload, identity]}
+  fetch:            {cost: 1, network: true,  resolves: [payload, access]}
+  static_parse:     {cost: 0, network: false, resolves: [delivery, richness, locus]}
+  structured_parse: {cost: 0, network: false, resolves: [richness, locus]}
+  known_host:       {cost: 1, network: true,  resolves: [payload, identity, locus]}
+  fetch_underlying: {cost: 2, network: true,  resolves: [payload, locus]}
+  render:           {cost: 3, network: true,  resolves: [locus, delivery, completeness]}
+  crawl_pages:      {cost: 4, network: true,  resolves: [completeness]}
+  print_pdf:        {cost: 4, network: true,  resolves: [payload]}
+  capture_scroll:   {cost: 5, network: true,  resolves: [completeness, locus]}
+
+# Terminal states. "Correctly determined this cannot be retrieved" is a RESULT,
+# not a crash and not an empty string.
+terminals:
+  RETRIEVED:        ok
+  NOT_RETRIEVABLE_AUTH:    reason must be reported to the user, no retry
+  NOT_RETRIEVABLE_BLOCKED: robots/ratelimit; report and stop
+  UNDERDETERMINED:  classification incomplete; the plan lists the next probe
+
+# ---------------------------------------------------------------------------
+# Detection rules. First match wins per dimension. Each rule cites FEATURES
+# produced by pure detectors -- rules never contain regexes themselves.
+# ---------------------------------------------------------------------------
+rules:
+  payload:
+    - {id: pl.ct-pdf,    when: {content_type: application/pdf},  value: pdf,     conf: 1.0}
+    - {id: pl.ct-json,   when: {content_type_class: json},       value: json,    conf: 1.0}
+    - {id: pl.ct-feed,   when: {content_type_class: feed},       value: feed,    conf: 1.0}
+    - {id: pl.ct-image,  when: {content_type_class: image},      value: image,   conf: 1.0}
+    - {id: pl.ct-arch,   when: {content_type_class: archive},    value: archive, conf: 1.0}
+    - {id: pl.ct-html,   when: {content_type_class: html},       value: html,    conf: 1.0}
+    - {id: pl.sniff,     when: {body_starts_html: true},         value: html,    conf: 0.7}
+    - {id: pl.default,   when: {},                               value: unknown, conf: 0.0}
+
+  access:
+    - {id: ac.401,      when: {status: [401, 403]},        value: auth_required, conf: 1.0}
+    - {id: ac.429,      when: {status: [429]},             value: rate_limited,  conf: 1.0}
+    - {id: ac.robots,   when: {robots_disallow: true},     value: blocked,       conf: 1.0}
+    - {id: ac.consent,  when: {consent_marker: true},      value: consent_wall,  conf: 0.8}
+    - {id: ac.loginform,when: {login_form: true},          value: auth_required, conf: 0.7}
+    - {id: ac.200,      when: {status: [200]},             value: open,          conf: 0.9}
+    - {id: ac.default,  when: {},                          value: unknown,       conf: 0.0}
+
+  delivery:
+    - {id: dl.nonhtml,  when: {payload_not_html: true},     value: non_html,        conf: 1.0}
+    - {id: dl.shell,    when: {fw_marker: true, static_text_chars: {lt: 200}},
+                                                            value: client_rendered, conf: 0.9}
+    - {id: dl.hydrate,  when: {fw_marker: true, static_text_chars: {gte: 200}},
+                                                            value: hydrated,        conf: 0.8}
+    - {id: dl.thinshell,when: {fw_marker: false, static_text_chars: {lt: 200}, script_ratio: {gte: 0.5}},
+                                                            value: client_rendered, conf: 0.6}
+    - {id: dl.tmpl,     when: {repeated_blocks: true},       value: templated,       conf: 0.7}
+    - {id: dl.static,   when: {static_text_chars: {gte: 200}}, value: static,        conf: 0.6}
+    - {id: dl.default,  when: {},                            value: unknown,         conf: 0.0}
+
+  locus:
+    - {id: lc.viewer,   when: {embedded_viewer: true},    value: external_resource, conf: 0.9}
+    - {id: lc.api,      when: {payload_is_data: true},    value: api,               conf: 0.9}
+    - {id: lc.jsonld,   when: {jsonld_blocks: {gte: 1}},  value: structured_data,   conf: 0.8}
+    - {id: lc.rendered, when: {render_delta_chars: {gte: 500}}, value: rendered_dom, conf: 0.9}
+    - {id: lc.markup,   when: {static_text_chars: {gte: 200}}, value: markup,       conf: 0.7}
+    - {id: lc.default,  when: {},                          value: unknown,          conf: 0.0}
+
+  completeness:
+    - {id: cp.infinite, when: {scroll_sentinel: true},        value: infinite,  conf: 0.8}
+    - {id: cp.window,   when: {role_feed: true},              value: windowed,  conf: 0.8}
+    - {id: cp.paged,    when: {rel_next: true},               value: paginated, conf: 0.9}
+    - {id: cp.pager,    when: {pager_controls: true},         value: paginated, conf: 0.7}
+    - {id: cp.deferred, when: {lazy_media: true},             value: deferred,  conf: 0.7}
+    - {id: cp.collapse, when: {collapsed_bodies: {gte: 1}},   value: collapsed, conf: 0.8}
+    - {id: cp.complete, when: {static_text_chars: {gte: 200}, scroll_sentinel: false,
+                               rel_next: false},              value: complete,  conf: 0.6}
+    - {id: cp.default,  when: {},                             value: unknown,   conf: 0.0}
+
+  identity:
+    - {id: id.session,  when: {set_cookie_session: true}, value: session_bound,   conf: 0.8}
+    - {id: id.query,    when: {query_significant: true},  value: query_dependent, conf: 0.8}
+    - {id: id.canon,    when: {canonical_present: true},  value: stable,          conf: 0.9}
+    - {id: id.nopath,   when: {query_significant: false}, value: stable,          conf: 0.6}
+    - {id: id.default,  when: {},                         value: unknown,         conf: 0.0}
+
+  richness:
+    - {id: ri.error,    when: {status: [404, 410, 500, 502, 503]}, value: error,  conf: 1.0}
+    - {id: ri.softerr,  when: {soft_error_marker: true},     value: error,   conf: 0.7}
+    - {id: ri.thin,     when: {static_text_chars: {lt: 200}, link_count: {lt: 5}},
+                                                            value: thin,    conf: 0.7}
+    - {id: ri.hub,      when: {link_text_ratio: {gte: 0.5}, link_count: {gte: 20}},
+                                                            value: hub,     conf: 0.8}
+    - {id: ri.records,  when: {repeated_blocks: true},       value: records, conf: 0.7}
+    - {id: ri.media,    when: {media_ratio: {gte: 0.5}},     value: media,   conf: 0.7}
+    - {id: ri.prose,    when: {static_text_chars: {gte: 200}}, value: prose, conf: 0.6}
+    - {id: ri.default,  when: {},                            value: unknown, conf: 0.0}
+
+# ---------------------------------------------------------------------------
+# Policy. Ordered; first match wins. `*` is a wildcard.
+# A row is a MATRIX CELL, not a genre. The Perplexity genres are POINTS in here.
+# ---------------------------------------------------------------------------
+policy:
+  # --- terminals first: correctly-determined non-retrieval ------------------
+  - {id: po.auth,    when: {access: auth_required}, plan: [], terminal: NOT_RETRIEVABLE_AUTH,
+     note: "cart/checkout/account/intranet: report the wall, do not scrape"}
+  - {id: po.blocked, when: {access: [blocked, rate_limited]}, plan: [], terminal: NOT_RETRIEVABLE_BLOCKED}
+  - {id: po.error,   when: {richness: error}, plan: [], terminal: RETRIEVED,
+     note: "404/soft-404: a determined result, useful to the crawler, not content"}
+
+  # --- non-HTML payloads: hand off, do not parse as markup ------------------
+  - {id: po.pdf,     when: {payload: pdf}, plan: [], terminal: RETRIEVED,
+     note: "hand to pdfdrill; htmldrill's job ends"}
+  - {id: po.data,    when: {payload: [json, feed]}, plan: [structured_parse], terminal: RETRIEVED}
+  - {id: po.binary,  when: {payload: [image, archive, other]}, plan: [], terminal: RETRIEVED}
+
+  # --- the viewer trap: the shell is not the content -----------------------
+  - {id: po.viewer,  when: {locus: external_resource}, plan: [fetch_underlying], terminal: RETRIEVED,
+     note: "document viewer / embedded player: locate the source resource"}
+
+  # --- consent walls block render, not fetch -------------------------------
+  - {id: po.consent, when: {access: consent_wall}, plan: [static_parse, structured_parse],
+     terminal: RETRIEVED, note: "take what the pre-consent markup gives; no render"}
+
+  # --- unbounded feeds: bound them or refuse to pretend --------------------
+  - {id: po.infinite, when: {completeness: infinite}, plan: [capture_scroll], terminal: RETRIEVED}
+  - {id: po.windowed, when: {completeness: windowed}, plan: [capture_scroll], terminal: RETRIEVED}
+  - {id: po.paged,    when: {completeness: paginated}, plan: [crawl_pages], terminal: RETRIEVED}
+
+  # --- client-rendered: markup is a shell ----------------------------------
+  - {id: po.spa,     when: {delivery: client_rendered}, plan: [render], terminal: RETRIEVED}
+  - {id: po.hydrate, when: {delivery: hydrated, locus: structured_data},
+     plan: [structured_parse, static_parse], terminal: RETRIEVED,
+     note: "product pages: JSON-LD beats scraping the hydrated DOM"}
+  - {id: po.hydrate2, when: {delivery: hydrated}, plan: [static_parse, render], terminal: RETRIEVED}
+
+  # --- in-markup hidden content: cheap offline repair ----------------------
+  - {id: po.collapse, when: {completeness: collapsed}, plan: [static_parse], terminal: RETRIEVED,
+     note: "details/template/noscript: bodies are already here"}
+  - {id: po.deferred, when: {completeness: deferred}, plan: [static_parse, render], terminal: RETRIEVED}
+
+  # --- the cheap happy paths ----------------------------------------------
+  - {id: po.struct,  when: {locus: structured_data}, plan: [structured_parse, static_parse],
+     terminal: RETRIEVED}
+  - {id: po.hub,     when: {richness: hub}, plan: [static_parse], terminal: RETRIEVED,
+     note: "sitemap/nav/index: harvest links, do not extract prose"}
+  - {id: po.thin,    when: {richness: thin, delivery: [static, templated]},
+     plan: [static_parse], terminal: RETRIEVED, note: "placeholder/coming-soon: really is thin"}
+  - {id: po.records, when: {richness: records}, plan: [static_parse], terminal: RETRIEVED}
+  - {id: po.media,   when: {richness: media}, plan: [static_parse], terminal: RETRIEVED}
+  - {id: po.static,  when: {delivery: [static, templated]}, plan: [static_parse], terminal: RETRIEVED}
+  - {id: po.nonhtml, when: {delivery: non_html}, plan: [fetch_underlying], terminal: RETRIEVED}
+
+  # --- CATCH-ALL. Never reached by a fully-determined vector (test T2).
+  # For underdetermined vectors this is where the machine says so HONESTLY and
+  # names the cheapest probe that resolves the missing dimension.
+  - {id: po.underdetermined, when: {}, plan: [], terminal: UNDERDETERMINED,
+     note: "plan is computed: cheapest capability whose resolves[] covers an unknown dim"}
