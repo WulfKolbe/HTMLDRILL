@@ -63,18 +63,20 @@ class Observation:
     """The raw material every detector reads. Nothing derived, nothing decided."""
 
     __slots__ = ("html", "headers", "url", "status", "rendered_html",
-                 "robots_txt_disallow",
+                 "robots_txt_disallow", "body_kind",
                  "_collected", "_text", "_splits", "_lower")
 
     def __init__(self, html: str | None, headers: dict | None, url: str | None,
                  status: int | None, rendered_html: str | None = None,
-                 robots_txt_disallow: bool | None = None) -> None:
+                 robots_txt_disallow: bool | None = None,
+                 body_kind: str | None = None) -> None:
         self.html = html or ""
         self.headers = {str(k).lower(): v for k, v in (headers or {}).items()}
         self.url = url or ""
         self.status = status
         self.rendered_html = rendered_html
         self.robots_txt_disallow = robots_txt_disallow
+        self.body_kind = body_kind
         self._collected: Any = None
         self._text: Any = None
         self._splits: Any = None
@@ -200,8 +202,30 @@ def _content_type_class(o: Observation):
     return "other"
 
 
+@detector("body_kind")
+def _body_kind(o: Observation):
+    """htmldrill's OWN verdict on the bytes — `fetch.content_kind()`, whose
+    comment reads "magic bytes are authoritative".
+
+    Observed live: a 32-page PDF served as `binary/octet-stream`. The declared
+    Content-Type said nothing usable, so `payload` came out `unknown` and
+    `delivery` came out `non_html`, which routed to po.nonhtml -> fetch_underlying
+    — the very step that had just produced the file. A fixed point that never
+    reached po.pdf ("hand to pdfdrill").
+
+    The correct answer was already in the sidecar as `content_kind`; the lattice
+    simply was not reading it. This is that wire, not a new inference.
+    """
+    if o.body_kind is None:
+        return NOT_OBSERVED
+    return str(o.body_kind).lower()
+
+
 @detector("payload_not_html")
 def _payload_not_html(o: Observation):
+    sniffed = _body_kind(o)
+    if sniffed is not NOT_OBSERVED:
+        return sniffed != "html"     # magic bytes outrank a declared content-type
     cls = _content_type_class(o)
     if cls is NOT_OBSERVED:
         return NOT_OBSERVED          # no content-type: not measured, do not guess
@@ -590,7 +614,8 @@ def _render_delta_chars(o: Observation):
 
 def collect(html: str | None, headers: dict | None = None, url: str | None = None,
             status: int | None = None, *, rendered_html: str | None = None,
-            robots_txt_disallow: bool | None = None) -> dict[str, Any]:
+            robots_txt_disallow: bool | None = None,
+            body_kind: str | None = None) -> dict[str, Any]:
     """Run every registered detector once. Total: always returns one entry per
     registered feature id, never raises.
 
@@ -598,7 +623,8 @@ def collect(html: str | None, headers: dict | None = None, url: str | None = Non
     explicit demotion to not-measured, not a swallowed error that would let a
     missing observation read as a negative finding.
     """
-    obs = Observation(html, headers, url, status, rendered_html, robots_txt_disallow)
+    obs = Observation(html, headers, url, status, rendered_html,
+                      robots_txt_disallow, body_kind)
     out: dict[str, Any] = {}
     for feature_id, fn in REGISTRY.items():
         try:

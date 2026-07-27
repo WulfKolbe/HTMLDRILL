@@ -86,9 +86,9 @@ def test_collect_never_raises_on_hostile_markup():
 # -- (b) each detector against a fixture that should trip it ------------------
 
 def _obs(html="", headers=None, url="", status=None, rendered_html=None,
-         robots_txt_disallow=None):
+         robots_txt_disallow=None, body_kind=None):
     return D.Observation(html, headers, url, status, rendered_html,
-                         robots_txt_disallow)
+                         robots_txt_disallow, body_kind)
 
 
 def one(feature: str, **kw):
@@ -116,6 +116,20 @@ def test_transport_detectors():
     assert one("payload_not_html") is D.NOT_OBSERVED
     assert one("payload_is_data", headers={"content-type": "application/json"}) is True
     assert one("payload_is_data", headers={"content-type": "text/html"}) is False
+
+
+def test_body_kind_carries_htmldrills_own_magic_byte_verdict():
+    """Observed live: a 32-page PDF served as `binary/octet-stream`. The sniff
+    already exists in fetch.content_kind(); the lattice just had to read it."""
+    assert one("body_kind") is D.NOT_OBSERVED
+    assert one("body_kind", body_kind="pdf") == "pdf"
+    assert one("body_kind", body_kind="PDF") == "pdf"          # normalised
+    assert one("body_kind", body_kind="html") == "html"
+    # and it OUTRANKS a lying content-type for the not-html question
+    assert one("payload_not_html", headers={"content-type": "text/html"},
+               body_kind="pdf") is True
+    assert one("payload_not_html", headers={"content-type": "binary/octet-stream"},
+               body_kind="html") is False
 
 
 def test_session_and_identity_detectors():

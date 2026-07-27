@@ -58,6 +58,13 @@ terminals:
 # ---------------------------------------------------------------------------
 rules:
   payload:
+    # Magic bytes first: they outrank a declared Content-Type, which real
+    # origins get wrong (a 32-page PDF served as `binary/octet-stream`).
+    # `body_kind` is htmldrill's own content_kind() verdict, not a new sniff.
+    - {id: pl.magic-pdf,   when: {body_kind: pdf},    value: pdf,     conf: 1.0}
+    - {id: pl.magic-image, when: {body_kind: image},  value: image,   conf: 1.0}
+    - {id: pl.magic-zip,   when: {body_kind: zip},    value: archive, conf: 1.0}
+    - {id: pl.magic-gzip,  when: {body_kind: gzip},   value: archive, conf: 1.0}
     - {id: pl.ct-pdf,    when: {content_type: application/pdf},  value: pdf,     conf: 1.0}
     - {id: pl.ct-json,   when: {content_type_class: json},       value: json,    conf: 1.0}
     - {id: pl.ct-feed,   when: {content_type_class: feed},       value: feed,    conf: 1.0}

@@ -19,6 +19,7 @@ import zlib
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 DEFAULT_UA = os.environ.get(
@@ -172,11 +173,26 @@ def fetch(url: str, timeout: float = DEFAULT_TIMEOUT,
     req = Request(norm, headers={
         "User-Agent": ua or DEFAULT_UA,
         "Accept": "text/html,application/xhtml+xml,*/*",
+        # Observed on a real WAF (ubiquitypress, 2026-07): UA alone -> 403,
+        # UA+Accept -> 403, UA+Accept-Language -> 200. Its absence was the
+        # whole difference between a fetch and a refusal.
+        "Accept-Language": "en-US,en;q=0.9",
         # Advertise the encodings we can actually undo — otherwise some origins
         # send gzip anyway and urllib hands back the raw compressed bytes.
         "Accept-Encoding": "gzip, deflate",
     })
-    with urlopen(req, timeout=timeout) as resp:        # noqa: S310 — http(s) only above
+    # An HTTP-level refusal (401/403/429/404) is an ANSWER about the resource, and
+    # the pagekind lattice has terminals for exactly those answers. Letting
+    # HTTPError propagate meant `access=auth_required` and `access=rate_limited`
+    # could never be produced through the real fetch path — every terminal that
+    # says "stop" was unreachable in practice. An HTTPError IS a response object,
+    # so it is read like one. A TRANSPORT failure (DNS, refused, timeout) still
+    # raises: there is no response, and nothing to classify.
+    try:
+        resp = urlopen(req, timeout=timeout)          # noqa: S310 — http(s) only above
+    except HTTPError as err:
+        resp = err
+    try:
         # Bounded read: never pull more than MAX_BYTES + 1 (the +1 detects overflow).
         body = resp.read(MAX_BYTES + 1)
         if len(body) > MAX_BYTES:
@@ -186,4 +202,7 @@ def fetch(url: str, timeout: float = DEFAULT_TIMEOUT,
         headers = {k: v for k, v in resp.headers.items()}
         body = _decompress(body, resp.headers.get("Content-Encoding", ""))
         ctype = resp.headers.get("Content-Type", "text/html")
-        return FetchResult(url, resp.geturl(), resp.status, headers, body, ctype)
+        status = getattr(resp, "status", None) or resp.getcode()
+        return FetchResult(url, resp.geturl(), status, headers, body, ctype)
+    finally:
+        resp.close()

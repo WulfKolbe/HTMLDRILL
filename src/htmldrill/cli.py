@@ -41,6 +41,7 @@ def _ctx(args) -> Ctx:
         no_js=getattr(args, "no_js", False),
         isolate=getattr(args, "isolate", False),
         download_pdf=getattr(args, "download_pdf", False),
+        follow=getattr(args, "follow", False),
         download_source=getattr(args, "download_source", False),
         render_delta=getattr(args, "render_delta", False),
         query=" ".join(getattr(args, "query", None) or []) or None,
@@ -190,6 +191,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ensure", action="store_true",
                    help="auto-run missing OFFLINE prerequisites first")
     p.set_defaults(cmd="splits")
+
+    p = sub.add_parser("underlying",
+                       help="locate the resource a viewer shell displays "
+                            "(pdf.js/embed ?file=…); --follow retrieves it")
+    url_arg(p); work_arg(p)
+    p.add_argument("--follow", action="store_true",
+                   help="NETWORK: fetch the located resource into its own sidecar")
+    p.add_argument("--force", action="store_true", help="re-fetch even if already retrieved")
+    p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
+    p.add_argument("--ua", help="override the User-Agent")
+    p.set_defaults(cmd="underlying")
 
     p = sub.add_parser("materialize",
                        help="recover hidden content as role=continuation fragments "

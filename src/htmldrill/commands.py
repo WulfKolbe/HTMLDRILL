@@ -26,6 +26,7 @@ from typing import Optional
 
 from . import detectors as DET
 from . import pagekind as PK
+from . import underlying as UND
 from . import planner
 from .parse import html as H
 from .sidecar import Sidecar, resolve_local_id, work_root
@@ -80,6 +81,7 @@ LATEX_BUILT = "LATEX_BUILT"
 SPLITS_KNOWN = "SPLITS_KNOWN"
 # pagekind lattice (classify — the total state machine over 7 dimensions)
 PAGEKIND_KNOWN = "PAGEKIND_KNOWN"
+UNDERLYING_KNOWN = "UNDERLYING_KNOWN"
 MATERIALIZED = "MATERIALIZED"
 # M5 (crawl / retrieve / chatlog)
 CRAWLED = "CRAWLED"
@@ -110,7 +112,8 @@ class Ctx:
     engine: str = "firefox"           # print: firefox (selenium) | chrome
     no_js: bool = False               # single: strip JavaScript from the archive
     isolate: bool = False             # single: cut the archive off from the network
-    download_pdf: bool = False        # arxiv: also fetch the PDF
+    download_pdf: bool = False
+    follow: bool = False        # arxiv: also fetch the PDF
     download_source: bool = False     # arxiv: also fetch the e-print LaTeX .tgz
     max_pages: int = 20               # crawl: hard cap on pages visited
     same_origin: bool = True          # crawl: restrict to same-origin internal links
@@ -521,7 +524,8 @@ def _snapshot_observation(ctx: Ctx) -> tuple[Sidecar, dict, str]:
     elif sc.has(RENDERED) and sc.has_blob("rendered.html"):
         rendered, source = sc.read_blob("rendered.html"), "rendered"
     feats = DET.collect(html, headers, sc.get_evidence("final_url") or sc.get_evidence("url"),
-                        sc.get_evidence("status"), rendered_html=rendered)
+                        sc.get_evidence("status"), rendered_html=rendered,
+                        body_kind=sc.get_evidence("content_kind"))
     return sc, feats, source
 
 
@@ -606,6 +610,55 @@ def cmd_classify(ctx: Ctx) -> str:
                 "determined as htmldrill can make it")
     else:
         lines.append("  unresolved: none — every dimension is determined")
+    return "\n".join(lines)
+
+
+def cmd_underlying(ctx: Ctx) -> str:
+    """Locate the resource a viewer SHELL is displaying (OFFLINE by default).
+
+    This executes the lattice's `fetch_underlying` capability. `classify` decides
+    that the markup is a shell (locus=external_resource); this says what the
+    shell is wrapped around — typically a PDF handed to a JS viewer in a query
+    parameter, where scraping the page would only ever yield the toolbar.
+
+    `--follow` then retrieves that resource into its own sidecar, so a book
+    chapter behind a pdf.js reader ends up as a real PDF ready for pdfdrill.
+    Records UNDERLYING_KNOWN."""
+    sc, html = _load_snapshot(ctx)
+    base = sc.get_evidence("final_url") or sc.get_evidence("url") or ""
+    found = UND.candidates(html, base)
+    sc.set_evidence("underlying", [{"url": c.url, "rule": c.rule,
+                                    "conf": c.confidence, "via": c.via} for c in found])
+    sc.add_fact(UNDERLYING_KNOWN)
+    sc.log_transition("underlying", _prev(sc, UNDERLYING_KNOWN), UNDERLYING_KNOWN, 0,
+                      f"{len(found)} candidate(s)")
+    sc.save()
+
+    if not found:
+        return (f"{sc.local_id}: no underlying resource found — this page does not "
+                f"look like a viewer shell.\n"
+                f"  (`classify` reports whether the lattice thinks it is one.)")
+    lines = [f"{sc.local_id}: {len(found)} underlying resource(s), most direct first:"]
+    for c in found:
+        lines.append(f"  {c.url}")
+        lines.append(f"      found by {c.rule} (conf {c.confidence:.2f})")
+        if c.via:
+            lines.append(f"      via     {c.via}")
+    top = max(found, key=lambda c: c.confidence)
+    if not ctx.follow:
+        lines.append(f"  next: `htmldrill underlying {ctx.url} --follow` to retrieve it, "
+                     f"or `htmldrill fetch {top.url}`")
+        return "\n".join(lines)
+
+    out = cmd_fetch(Ctx(url=top.url, work=ctx.work, force=ctx.force,
+                        timeout=ctx.timeout, ua=ctx.ua))
+    target = Sidecar(F.local_id_for(top.url), work=ctx.work)
+    kind = target.get_evidence("content_kind", "?")
+    lines.append(f"  retrieved: {top.url}")
+    lines.append(f"    {out.splitlines()[0] if out else ''}")
+    lines.append(f"    kind: {kind}  ->  " + (
+        f"`pdfdrill md {target.blob_path(target.get_evidence('raw_blob', 'raw.pdf'))}`"
+        if kind == "pdf" else f"`htmldrill classify {top.url}`"))
     return "\n".join(lines)
 
 
@@ -2268,6 +2321,7 @@ HANDLERS = {
     "semanticscholar": cmd_semanticscholar,
     "route": cmd_route,
     "classify": cmd_classify,
+    "underlying": cmd_underlying,
     "size": cmd_size,
     "headers": cmd_headers,
     "meta": cmd_meta,

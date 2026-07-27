@@ -18,6 +18,7 @@ Routing (offline):
 
 Introspection (snapshot, no render):
   htmldrill classify                          Classify the snapshot on the pagekind lattice — seven finite dimensions (delivery, locus, completeness, access, identity, payload, richness), each printing the rule id that fired, then the retrieval plan or the determined terminal. `unknown` is a value, so an uncovered page reports UNDERDETERMINED and names its cheapest next probe instead of guessing. Records PAGEKIND_KNOWN.
+  htmldrill underlying                        Locate the resource a viewer SHELL is displaying — a PDF handed to a pdf.js/Hypothesis viewer in an iframe `?file=` parameter, an embed pointing straight at a document, or an explicit download link. Executes the lattice's `fetch_underlying` capability; `--follow` retrieves it into its own sidecar for pdfdrill. Records UNDERLYING_KNOWN.
   htmldrill size                              Bytes, line/tag count, framework guess, and a static-vs-render verdict.
   htmldrill headers                           The captured HTTP response headers, one per line.
   htmldrill meta                              <meta> tags (charset, viewport, description, robots, author) and <title>.

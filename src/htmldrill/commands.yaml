@@ -65,6 +65,11 @@ commands:
     summary: Classify the snapshot on the pagekind lattice — seven finite dimensions (delivery, locus, completeness, access, identity, payload, richness), each printing the rule id that fired, then the retrieval plan or the determined terminal. `unknown` is a value, so an uncovered page reports UNDERDETERMINED and names its cheapest next probe instead of guessing. Records PAGEKIND_KNOWN.
     done_when: fact:PAGEKIND_KNOWN
 
+  - name: underlying
+    section: Introspection (snapshot, no render)
+    summary: Locate the resource a viewer SHELL is displaying — a PDF handed to a pdf.js/Hypothesis viewer in an iframe `?file=` parameter, an embed pointing straight at a document, or an explicit download link. Executes the lattice's `fetch_underlying` capability; `--follow` retrieves it into its own sidecar for pdfdrill. Records UNDERLYING_KNOWN.
+    done_when: fact:UNDERLYING_KNOWN
+
   - name: size
     section: Introspection (snapshot, no render)
     summary: Bytes, line/tag count, framework guess, and a static-vs-render verdict.
