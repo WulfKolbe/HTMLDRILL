@@ -19,6 +19,8 @@ Routes model REAL observed behaviour, not invented cases:
   /proper.pdf       the same bytes as application/pdf
   /viewer           a pdf.js viewer shell whose iframe carries ?file=<pdf>
   /ok               ordinary prose HTML
+  /robots.txt       a policy that disallows /private/ for every crawler
+  /private/page     ordinary HTML that robots.txt asks crawlers to skip
 """
 from __future__ import annotations
 
@@ -46,6 +48,15 @@ OK_HTML = ("<!doctype html><html><head><title>A Page</title></head><body><h1>A P
                     "thin, with nothing else remarkable about it at all. ") * 3
            + "</p></body></html>").encode()
 
+ROBOTS_TXT = (
+    b"# the owner's crawling policy\n"
+    b"User-agent: *\n"
+    b"Disallow: /private/\n"
+    b"Allow: /private/public-note.html\n"
+    b"Crawl-delay: 1\n"
+    b"\n"
+    b"Sitemap: http://127.0.0.1/sitemap.xml\n")
+
 TINY_403 = b"<html><head><title>403 Forbidden</title></head><body>Forbidden</body></html>"
 
 
@@ -67,7 +78,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):                                        # noqa: N802
         path = self.path.split("?")[0]
         self.server.seen_headers.append(dict(self.headers))   # type: ignore[attr-defined]
+        self.server.seen_paths.append(path)                   # type: ignore[attr-defined]
 
+        if path == "/robots.txt":
+            return self._send(200, ROBOTS_TXT, "text/plain")
+        if path == "/private/page":
+            return self._send(200, OK_HTML, "text/html; charset=utf-8")
         if path == "/waf":
             # the observed rule: Accept-Language is what the WAF actually wants
             if not self.headers.get("Accept-Language"):
@@ -101,6 +117,7 @@ class Origin:
     def __init__(self) -> None:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.seen_headers = []                         # type: ignore[attr-defined]
+        self.server.seen_paths = []                           # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self) -> "Origin":
@@ -123,3 +140,8 @@ class Origin:
     @property
     def seen_headers(self) -> list[dict]:
         return self.server.seen_headers                        # type: ignore[attr-defined]
+
+    @property
+    def seen_paths(self) -> list[str]:
+        """Every path requested — lets a test assert what was NOT asked for."""
+        return self.server.seen_paths                          # type: ignore[attr-defined]

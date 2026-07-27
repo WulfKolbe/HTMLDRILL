@@ -283,9 +283,16 @@ def _robots_txt_disallow(o: Observation):
     well — a worse failure than the verdict bug this lattice replaces, because
     a refusal looks like correctness.
 
-    htmldrill does not fetch robots.txt, so absent an explicit verdict from
-    `probe_robots` this is NOT_OBSERVED and `ac.robots` cannot fire. That is the
-    intended state: `blocked` is reachable only from evidence, never from a hint.
+    It is also CRAWL-SCOPED. robots.txt states the owner's intent about automated
+    crawlers — agents that traverse a link graph on their own initiative. It is
+    not access control and does not govern fetching one URL because a person
+    asked for it, which is why a browser and a screen reader do not consult it
+    either. So this stays NOT_OBSERVED on the single-retrieval path, and
+    `ac.robots` is unreachable there by design; `crawl`, which really does
+    traverse, honours the policy directly (commands._robots_ok).
+
+    `blocked` is therefore reachable only from evidence, in the one activity the
+    evidence is about. See htmldrill/robots.py for the full reasoning.
     """
     if o.robots_txt_disallow is None:
         return NOT_OBSERVED

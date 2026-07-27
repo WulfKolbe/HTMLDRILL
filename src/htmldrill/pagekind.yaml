@@ -77,6 +77,12 @@ rules:
   access:
     - {id: ac.401,      when: {status: [401, 403]},        value: auth_required, conf: 1.0}
     - {id: ac.429,      when: {status: [429]},             value: rate_limited,  conf: 1.0}
+    # CRAWL-SCOPED. robots.txt (RFC 9309) states the owner's intent about
+    # automated crawlers, so `robots_txt_disallow` is only ever OBSERVED while
+    # `crawl` traverses a link graph. The single-retrieval path never supplies
+    # it, leaving this rule unreachable there on purpose: fetching one URL a
+    # person asked for is user-directed access, not crawling, and refusing it
+    # would invent a prohibition the owner never made. See htmldrill/robots.py.
     - {id: ac.robots,   when: {robots_txt_disallow: true}, value: blocked,       conf: 1.0}
     - {id: ac.consent,  when: {consent_marker: true},      value: consent_wall,  conf: 0.8}
     - {id: ac.loginform,when: {login_form: true},          value: auth_required, conf: 0.7}

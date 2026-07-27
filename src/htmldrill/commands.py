@@ -26,6 +26,7 @@ from typing import Optional
 
 from . import detectors as DET
 from . import pagekind as PK
+from . import robots as ROB
 from . import underlying as UND
 from . import planner
 from .parse import html as H
@@ -82,6 +83,7 @@ SPLITS_KNOWN = "SPLITS_KNOWN"
 # pagekind lattice (classify — the total state machine over 7 dimensions)
 PAGEKIND_KNOWN = "PAGEKIND_KNOWN"
 UNDERLYING_KNOWN = "UNDERLYING_KNOWN"
+ROBOTS_KNOWN = "ROBOTS_KNOWN"
 MATERIALIZED = "MATERIALIZED"
 # M5 (crawl / retrieve / chatlog)
 CRAWLED = "CRAWLED"
@@ -659,6 +661,69 @@ def cmd_underlying(ctx: Ctx) -> str:
     lines.append(f"    kind: {kind}  ->  " + (
         f"`pdfdrill md {target.blob_path(target.get_evidence('raw_blob', 'raw.pdf'))}`"
         if kind == "pdf" else f"`htmldrill classify {top.url}`"))
+    return "\n".join(lines)
+
+
+def cmd_robots(ctx: Ctx) -> str:
+    """Report the site owner's stated CRAWLING policy for this URL (NETWORK).
+
+    Executes the lattice's `probe_robots` capability. robots.txt (RFC 9309) is a
+    statement about automated crawlers — agents that discover and traverse a
+    site's link graph on their own initiative. It is not access control, and it
+    does not govern fetching one URL because a person asked for that URL.
+
+    So this command REPORTS; it does not refuse. htmldrill's single-target
+    commands are assistive — the same class as a browser, a screen reader, or a
+    reader-mode extension, which likewise do not consult robots.txt. The one
+    place the owner's intent binds is `crawl`, which really does traverse a link
+    graph, and which honours it. Records ROBOTS_KNOWN."""
+    if not ctx.url:
+        raise ValueError("usage: htmldrill robots <url>")
+    ua = ctx.ua or F.DEFAULT_UA
+    doc = ROB.fetch(ctx.url, lambda u: F.fetch(u, timeout=ctx.timeout, ua=ua), ua=ua)
+    v = doc.verdict(ctx.url, ua)
+    delay = doc.crawl_delay_for(ua)
+
+    sc = Sidecar(F.local_id_for(ctx.url), work=ctx.work)
+    sc.set_evidence("robots_url", doc.source_url)
+    sc.set_evidence("robots_reachable", doc.fetched)
+    sc.set_evidence("robots_status", doc.status)
+    sc.set_evidence("robots_group", v.group)
+    sc.set_evidence("robots_crawl_allowed", v.allowed)
+    sc.set_evidence("robots_rule", v.rule_text)
+    sc.set_evidence("robots_sitemaps", list(doc.sitemaps))
+    sc.add_fact(ROBOTS_KNOWN)
+    sc.log_transition("robots", _prev(sc, ROBOTS_KNOWN), ROBOTS_KNOWN, 0,
+                      f"crawl_allowed={v.allowed} group={v.group}")
+    sc.save()
+
+    lines = [f"{sc.local_id}: {doc.source_url}"]
+    if not doc.fetched:
+        lines.append("  unreachable — the owner stated no crawling preference.")
+        lines.append("  (silence is not a prohibition; it is an absence of one.)")
+    elif doc.status != 200:
+        lines.append(f"  HTTP {doc.status} — no crawling policy published.")
+    else:
+        lines.append(f"  matching group:  User-agent: {v.group}")
+        lines.append(f"  matching rule:   {v.rule_text}")
+        lines.append(f"  reason:          {v.reason}")
+        lines.append(f"  crawling this path: "
+                     f"{'ALLOWED' if v.allowed else 'DISALLOWED by the owner'}")
+        if delay is not None:
+            lines.append(f"  crawl-delay:     {delay}s")
+        if doc.sitemaps:
+            lines.append(f"  sitemaps:        {', '.join(doc.sitemaps[:5])}")
+    lines.append("")
+    lines.append("  scope: this is the owner's policy for AUTOMATED CRAWLERS (RFC 9309).")
+    if not v.allowed and doc.fetched and doc.status == 200:
+        lines.append("         `htmldrill crawl` honours it and will skip this path.")
+        lines.append("         It does NOT gate `fetch`/`classify`/`underlying`: retrieving")
+        lines.append("         one URL a person asked for is user-directed access, not")
+        lines.append("         crawling — the same basis on which a browser or a screen")
+        lines.append("         reader fetches it without consulting robots.txt.")
+    else:
+        lines.append("         `crawl` honours it; single-target retrieval is user-directed")
+        lines.append("         and is not crawling.")
     return "\n".join(lines)
 
 
@@ -1652,26 +1717,26 @@ def _same_origin(start_url: str, candidate: str) -> bool:
 
 
 def _robots_ok(url: str, ua: str) -> bool:
-    """robots.txt politeness for http(s): True if the UA may fetch `url`. If the
-    robots fetch fails (network error / no robots), proceed politely (True) — we
-    never block the crawl on an unreachable robots file. Offline file:// always
-    allowed."""
-    from urllib.parse import urlparse, urlunparse
-    from urllib.robotparser import RobotFileParser
-    p = urlparse(url)
-    if p.scheme not in ("http", "https"):
-        return True
-    robots_url = urlunparse((p.scheme, p.netloc, "/robots.txt", "", "", ""))
-    rp = RobotFileParser()
+    """May the CRAWLER traverse `url`? Used only by `crawl`, which really does
+    follow a link graph — that is the activity robots.txt governs.
+
+    Single-target retrieval never calls this: fetching one URL a person asked
+    for is user-directed access, not crawling. See htmldrill.robots.
+
+    An unreachable or absent robots.txt means no preference was stated, which is
+    not a prohibition — proceed politely.
+    """
+    from urllib.parse import urlparse as _up
+
+    if _up(url).scheme not in ("http", "https"):
+        return True                        # file:// is not a web origin
     try:
-        rp.set_url(robots_url)
-        rp.read()
-    except Exception:  # noqa: BLE001 — unreachable/garbled robots ⇒ proceed politely
+        doc = ROB.fetch(url, lambda u: F.fetch(u, timeout=15, ua=ua), ua=ua)
+    except Exception:  # noqa: BLE001 — unreachable/garbled robots => proceed politely
         return True
-    try:
-        return rp.can_fetch(ua, url)
-    except Exception:  # noqa: BLE001
+    if not doc.fetched or doc.status != 200:
         return True
+    return doc.verdict(url, ua).allowed
 
 
 def cmd_crawl(ctx: Ctx) -> str:
@@ -2322,6 +2387,7 @@ HANDLERS = {
     "route": cmd_route,
     "classify": cmd_classify,
     "underlying": cmd_underlying,
+    "robots": cmd_robots,
     "size": cmd_size,
     "headers": cmd_headers,
     "meta": cmd_meta,

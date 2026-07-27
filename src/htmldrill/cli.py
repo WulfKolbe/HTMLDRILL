@@ -109,6 +109,14 @@ def main(argv: list[str] | None = None) -> int:
         p.set_defaults(cmd=name)
 
     # route — classify a URL: which *drill tool should handle it (offline, no fetch)
+    p = sub.add_parser("robots",
+                       help="the owner's stated CRAWLING policy (RFC 9309) — advisory; "
+                            "binds `crawl`, never gates a user-directed fetch")
+    url_arg(p); work_arg(p)
+    p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)
+    p.add_argument("--ua", help="override the User-Agent used for group matching")
+    p.set_defaults(cmd="robots")
+
     p = sub.add_parser("route",
                        help="name the *drill tool that should handle a URL "
                             "(pdfdrill/YTDRILL/CHATDRILL/htmldrill) — offline verdict")

@@ -78,6 +78,7 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 | `htmldrill scholar` | Recognise a Google Scholar profile and fetch EVERY page of works past the "Show more" wall via cstart/pagesize URL pagination (no browser, no clicks), merged into one raw.html snapshot. Records FETCHED + SCHOLAR. _(network)_ |
 | `htmldrill orcid` | Recognise an ORCID record (or bare id) and fetch EVERY work from the public JSON API (pub.orcid.org — one call, no "Show more" button), synthesised into a works-list snapshot. Records FETCHED + ORCID. _(network)_ |
 | `htmldrill semanticscholar` | Recognise a Semantic Scholar author and fetch EVERY paper via the Graph API (offset/limit pagination, no browser), synthesised into a works-list snapshot. Records FETCHED + SEMANTIC_SCHOLAR. _(network)_ |
+| `htmldrill robots` | Report the site owner's stated CRAWLING policy for a URL (RFC 9309) — matching group, the exact rule that matched, crawl-delay and sitemaps. Advisory by design; robots.txt governs automated crawlers, so it binds `crawl` and does NOT gate single-target `fetch`/`classify`/`underlying`, which retrieve one URL at a person's request. Records ROBOTS_KNOWN. _(network)_ |
 
 ### Routing (offline)
 

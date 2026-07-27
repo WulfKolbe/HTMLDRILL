@@ -54,6 +54,12 @@ commands:
     network: true
     done_when: fact:SEMANTIC_SCHOLAR
 
+  - name: robots
+    section: Known-host routing (network)
+    summary: "Report the site owner's stated CRAWLING policy for a URL (RFC 9309) — matching group, the exact rule that matched, crawl-delay and sitemaps. Advisory by design; robots.txt governs automated crawlers, so it binds `crawl` and does NOT gate single-target `fetch`/`classify`/`underlying`, which retrieve one URL at a person's request. Records ROBOTS_KNOWN."
+    network: true
+    done_when: fact:ROBOTS_KNOWN
+
   # -- Routing (offline) — which *drill tool should handle this URL --
   - name: route
     section: Routing (offline)
