@@ -118,7 +118,8 @@ class Ctx:
     follow: bool = False        # arxiv: also fetch the PDF
     download_source: bool = False     # arxiv: also fetch the e-print LaTeX .tgz
     max_pages: int = 20               # crawl: hard cap on pages visited
-    same_origin: bool = True          # crawl: restrict to same-origin internal links
+    same_origin: bool = True
+    respect_robots: bool = False          # crawl: restrict to same-origin internal links
 
 
 # -- id resolution -----------------------------------------------------------
@@ -1716,27 +1717,54 @@ def _same_origin(start_url: str, candidate: str) -> bool:
     return False
 
 
-def _robots_ok(url: str, ua: str) -> bool:
-    """May the CRAWLER traverse `url`? Used only by `crawl`, which really does
-    follow a link graph — that is the activity robots.txt governs.
+def _robots_ok(url: str, ua: str, respect: bool = False) -> bool:
+    """May `crawl` traverse `url`?
 
-    Single-target retrieval never calls this: fetching one URL a person asked
-    for is user-directed access, not crawling. See htmldrill.robots.
+    ADVISORY BY DEFAULT. htmldrill runs for a person who asked for this content,
+    not as an autonomous crawler harvesting a site it was never pointed at, so
+    the owner's crawler policy is REPORTED rather than enforced. Pass
+    ``respect=True`` (``crawl --respect-robots``) to enforce it — useful when
+    you are deliberately behaving as a crawler on someone else's origin.
+
+    Single-target retrieval never calls this at all: see htmldrill.robots.
 
     An unreachable or absent robots.txt means no preference was stated, which is
-    not a prohibition — proceed politely.
+    not a prohibition — proceed either way.
     """
     from urllib.parse import urlparse as _up
 
+    if not respect:
+        return True
     if _up(url).scheme not in ("http", "https"):
         return True                        # file:// is not a web origin
     try:
         doc = ROB.fetch(url, lambda u: F.fetch(u, timeout=15, ua=ua), ua=ua)
-    except Exception:  # noqa: BLE001 — unreachable/garbled robots => proceed politely
+    except Exception:  # noqa: BLE001 — unreachable/garbled robots => proceed
         return True
     if not doc.fetched or doc.status != 200:
         return True
     return doc.verdict(url, ua).allowed
+
+
+def _robots_note(url: str, ua: str) -> str:
+    """What the owner asked of crawlers — surfaced even when not enforced, so a
+    default that proceeds is still an INFORMED default rather than a blind one."""
+    from urllib.parse import urlparse as _up
+
+    if _up(url).scheme not in ("http", "https"):
+        return ""
+    try:
+        doc = ROB.fetch(url, lambda u: F.fetch(u, timeout=15, ua=ua), ua=ua)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not doc.fetched or doc.status != 200:
+        return ""
+    v = doc.verdict(url, ua)
+    if v.allowed:
+        return ""
+    return (f"robots.txt asks crawlers not to traverse this path "
+            f"({v.rule_text}, group `{v.group}`) — proceeding anyway because you "
+            f"asked for this content; `--respect-robots` to honour it")
 
 
 def cmd_crawl(ctx: Ctx) -> str:
@@ -1775,6 +1803,7 @@ def cmd_crawl(ctx: Ctx) -> str:
     pages: list[dict] = []          # per-page record: {url, id, depth, objects, links}
     followed: list[str] = []        # the edges actually traversed (for the summary)
     skipped_robots: list[str] = []
+    robots_note = _robots_note(ctx.url, ua) if (start_is_http and not ctx.respect_robots) else ""
     origin_anchor: Optional[str] = None
 
     # BFS queue keyed by the ORIGINAL url string; we map each to a target id.
@@ -1782,7 +1811,7 @@ def cmd_crawl(ctx: Ctx) -> str:
     while queue and len(pages) < ctx.max_pages:
         url, depth = queue.pop(0)
         # robots gate (http only); file:// always allowed.
-        if start_is_http and not _robots_ok(url, ua):
+        if start_is_http and not _robots_ok(url, ua, respect=ctx.respect_robots):
             skipped_robots.append(url)
             continue
         page_ctx = Ctx(url=url, work=ctx.work, force=ctx.force, ua=ctx.ua,
@@ -1838,6 +1867,8 @@ def cmd_crawl(ctx: Ctx) -> str:
         "pages_visited": len(pages),
         "links_followed": len(followed),
         "robots_skipped": len(skipped_robots),
+        "robots_note": robots_note,
+        "robots_respected": ctx.respect_robots,
         "pages": pages,
         "followed": followed,
     }
@@ -1879,6 +1910,8 @@ def _crawl_report(sc: Sidecar, summary: dict, cached: bool) -> str:
     ]
     if summary.get("robots_skipped"):
         lines.append(f"  robots.txt disallowed: {summary['robots_skipped']} page(s) skipped")
+    if summary.get("robots_note"):
+        lines.append(f"  note: {summary['robots_note']}")
     for p in pages:
         lines.append(f"  [{p['depth']}] {p['id']:<28} {p['objects']:>3} objs · "
                      f"{p['internal_links']} internal / {p['external_links']} external links")

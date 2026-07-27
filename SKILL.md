@@ -157,7 +157,7 @@ _Generated from `commands.yaml` by skillsync. Edit the manifest, not this sectio
 
 | Command | Returns |
 |---|---|
-| `htmldrill crawl` | Bounded same-origin crawl from a start URL — fetch+model each page, follow internal links to --depth (--max cap, cycle-safe). NETWORK for http; offline for file://. Records CRAWLED. _(network)_ |
+| `htmldrill crawl` | Bounded same-origin crawl from a start URL — fetch+model each page, follow internal links to --depth (--max cap, cycle-safe). NETWORK for http; offline for file://. robots.txt is reported but ADVISORY by default (--respect-robots enforces it). Records CRAWLED. _(network)_ |
 | `htmldrill retrieve` | Rank the document's units against a query using pdfdrill's lexical IDF/overlap retriever over the docmodel (offline; --json for a wrapper). Records RETRIEVED. |
 | `htmldrill chatlog` | Append a Q&A turn (--ask/--answer/--units/--model) to the per-target chat.jsonl transcript, or show it. Offline. Records CHATLOGGED. |
 

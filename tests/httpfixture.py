@@ -19,6 +19,8 @@ Routes model REAL observed behaviour, not invented cases:
   /proper.pdf       the same bytes as application/pdf
   /viewer           a pdf.js viewer shell whose iframe carries ?file=<pdf>
   /ok               ordinary prose HTML
+  /flaky            429s twice with Retry-After: 0, then 200 — a transient
+                    refusal, which retrying turns into the actual content
   /robots.txt       a policy that disallows /private/ for every crawler
   /private/page     ordinary HTML that robots.txt asks crawlers to skip
 """
@@ -95,7 +97,14 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(401, b"<html><body>Sign in</body></html>", "text/html")
         if path == "/ratelimited":
             return self._send(429, b"<html><body>Slow down</body></html>", "text/html",
-                              {"Retry-After": "60"})
+                              {"Retry-After": "0"})
+        if path == "/flaky":
+            n = self.server.flaky_hits                        # type: ignore[attr-defined]
+            self.server.flaky_hits = n + 1                    # type: ignore[attr-defined]
+            if n < 2:
+                return self._send(429, b"<html><body>later</body></html>",
+                                  "text/html", {"Retry-After": "0"})
+            return self._send(200, OK_HTML, "text/html; charset=utf-8")
         if path == "/missing":
             return self._send(404, b"<html><body>Not here</body></html>", "text/html")
         if path == "/octet.pdf":
@@ -118,6 +127,7 @@ class Origin:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.seen_headers = []                         # type: ignore[attr-defined]
         self.server.seen_paths = []                           # type: ignore[attr-defined]
+        self.server.flaky_hits = 0                            # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self) -> "Origin":

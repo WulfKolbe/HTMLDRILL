@@ -15,6 +15,7 @@ import gzip
 import hashlib
 import os
 import re
+import time
 import zlib
 from pathlib import Path
 from typing import Optional
@@ -22,13 +23,44 @@ from urllib.parse import urlparse
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+#: htmldrill identifies itself HONESTLY, and that is not politeness — it is what
+#: measurably works. Tested against a live WAF (ubiquitypress, 2026-07):
+#:
+#:   htmldrill UA + Accept-Language                  -> 200
+#:   Chrome UA   + Accept-Language                   -> 403
+#:   Chrome UA   + Accept-Language + Sec-Fetch-* +UIR-> 403
+#:
+#: A Chrome token arriving without Chrome's TLS/HTTP-2 fingerprint and client
+#: hints is a MISMATCH, and modern WAFs score that far worse than a tool that
+#: says what it is. Impersonation costs the reader the page. Override with
+#: $HTMLDRILL_UA if a specific origin needs something else.
 DEFAULT_UA = os.environ.get(
     "HTMLDRILL_UA", "htmldrill/0.1 (+https://github.com/WulfKolbe/htmldrill)")
+
+#: Transient-failure retries. A 429 or a 5xx is a "not right now", not an answer
+#: about the resource — retrying is what turns it into the content the user
+#: asked for. 401/403/404 are DETERMINED answers and are never retried: the
+#: lattice classifies those into real terminals instead.
+RETRIES = int(os.environ.get("HTMLDRILL_RETRIES", "3"))
+RETRY_BASE = float(os.environ.get("HTMLDRILL_RETRY_BASE", "1.0"))
+RETRY_MAX_WAIT = float(os.environ.get("HTMLDRILL_RETRY_MAX_WAIT", "10"))
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 DEFAULT_TIMEOUT = float(os.environ.get("HTMLDRILL_TIMEOUT", "20"))
 
 #: Hard cap on bytes we will read/keep (live fetch and local file). A multi-hundred
 #: -MB page degrades gracefully (clear error) instead of hanging/OOM-ing the parser.
 MAX_BYTES = int(os.environ.get("HTMLDRILL_MAX_BYTES", str(256 * 1024 * 1024)))
+
+
+def _retry_after(value: Optional[str], fallback: float) -> float:
+    """Honour a `Retry-After` (seconds form). Being told to wait and then not
+    waiting is how a reader gets IP-banned and ends up with nothing."""
+    if not value:
+        return fallback
+    try:
+        return max(0.0, float(value.strip()))
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _decompress(body: bytes, encoding: str) -> bytes:
@@ -172,11 +204,18 @@ def fetch(url: str, timeout: float = DEFAULT_TIMEOUT,
                            body, ctype)
     req = Request(norm, headers={
         "User-Agent": ua or DEFAULT_UA,
-        "Accept": "text/html,application/xhtml+xml,*/*",
-        # Observed on a real WAF (ubiquitypress, 2026-07): UA alone -> 403,
-        # UA+Accept -> 403, UA+Accept-Language -> 200. Its absence was the
-        # whole difference between a fetch and a refusal.
+        # The rest of the request is browser-SHAPED even though the UA is honest:
+        # origins gate on the shape as well as the token, and a reader should not
+        # be turned away for a header their browser would have sent. The observed
+        # WAF wanted Accept-Language specifically; the Sec-Fetch-* set is
+        # measured-harmless here and helps at other origins.
         "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Accept": "text/html,application/xhtml+xml,*/*",
         # Advertise the encodings we can actually undo — otherwise some origins
         # send gzip anyway and urllib hands back the raw compressed bytes.
         "Accept-Encoding": "gzip, deflate",
@@ -188,21 +227,36 @@ def fetch(url: str, timeout: float = DEFAULT_TIMEOUT,
     # says "stop" was unreachable in practice. An HTTPError IS a response object,
     # so it is read like one. A TRANSPORT failure (DNS, refused, timeout) still
     # raises: there is no response, and nothing to classify.
-    try:
-        resp = urlopen(req, timeout=timeout)          # noqa: S310 — http(s) only above
-    except HTTPError as err:
-        resp = err
-    try:
-        # Bounded read: never pull more than MAX_BYTES + 1 (the +1 detects overflow).
-        body = resp.read(MAX_BYTES + 1)
-        if len(body) > MAX_BYTES:
-            raise ValueError(
-                f"{norm} response exceeds HTMLDRILL_MAX_BYTES ({MAX_BYTES}); "
-                f"raise the limit to process it.")
-        headers = {k: v for k, v in resp.headers.items()}
-        body = _decompress(body, resp.headers.get("Content-Encoding", ""))
-        ctype = resp.headers.get("Content-Type", "text/html")
-        status = getattr(resp, "status", None) or resp.getcode()
-        return FetchResult(url, resp.geturl(), status, headers, body, ctype)
-    finally:
-        resp.close()
+    attempt, wait = 0, RETRY_BASE
+    while True:
+        attempt += 1
+        try:
+            resp = urlopen(req, timeout=timeout)          # noqa: S310 — http(s) only above
+        except HTTPError as err:
+            resp = err
+        except Exception:                                  # noqa: BLE001 — transient transport
+            if attempt > RETRIES:
+                raise
+            time.sleep(min(wait, RETRY_MAX_WAIT))
+            wait *= 2
+            continue
+        try:
+            status = getattr(resp, "status", None) or resp.getcode()
+            if status in RETRY_STATUSES and attempt <= RETRIES:
+                delay = _retry_after(resp.headers.get("Retry-After"), wait)
+                resp.close()
+                time.sleep(min(delay, RETRY_MAX_WAIT))
+                wait *= 2
+                continue
+            # Bounded read: never pull more than MAX_BYTES + 1 (the +1 detects overflow).
+            body = resp.read(MAX_BYTES + 1)
+            if len(body) > MAX_BYTES:
+                raise ValueError(
+                    f"{norm} response exceeds HTMLDRILL_MAX_BYTES ({MAX_BYTES}); "
+                    f"raise the limit to process it.")
+            headers = {k: v for k, v in resp.headers.items()}
+            body = _decompress(body, resp.headers.get("Content-Encoding", ""))
+            ctype = resp.headers.get("Content-Type", "text/html")
+            return FetchResult(url, resp.geturl(), status, headers, body, ctype)
+        finally:
+            resp.close()

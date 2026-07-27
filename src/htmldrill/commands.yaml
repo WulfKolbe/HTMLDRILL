@@ -224,7 +224,7 @@ commands:
   # OFFLINE and requires `model` (auto-ensured). `chatlog` is OFFLINE, no model.
   - name: crawl
     section: Crawl / retrieve / chat (M5)
-    summary: Bounded same-origin crawl from a start URL — fetch+model each page, follow internal links to --depth (--max cap, cycle-safe). NETWORK for http; offline for file://. Records CRAWLED.
+    summary: "Bounded same-origin crawl from a start URL — fetch+model each page, follow internal links to --depth (--max cap, cycle-safe). NETWORK for http; offline for file://. robots.txt is reported but ADVISORY by default (--respect-robots enforces it). Records CRAWLED."
     network: true
     done_when: fact:CRAWLED
 

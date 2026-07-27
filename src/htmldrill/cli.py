@@ -53,6 +53,7 @@ def _ctx(args) -> Ctx:
         depth=getattr(args, "depth", 1),
         max_pages=getattr(args, "max_pages", 20),
         same_origin=getattr(args, "same_origin", True),
+        respect_robots=getattr(args, "respect_robots", False),
     )
 
 
@@ -235,6 +236,9 @@ def main(argv: list[str] | None = None) -> int:
                    default=True, help="restrict to same-origin links (default on)")
     p.add_argument("--cross-origin", dest="same_origin", action="store_false",
                    help="allow following off-origin internal links too")
+    p.add_argument("--respect-robots", dest="respect_robots", action="store_true",
+                   help="enforce the owner's robots.txt crawler policy (default: "
+                        "report it and proceed — you asked for this content)")
     p.add_argument("--force", action="store_true", help="re-crawl even if CRAWLED")
     p.add_argument("--ua", help="override User-Agent (and robots UA)")
     p.add_argument("--timeout", type=float, default=F.DEFAULT_TIMEOUT)

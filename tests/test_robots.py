@@ -190,20 +190,38 @@ def test_the_robots_command_records_an_allowed_path_too():
         assert sc.get_evidence("robots_sitemaps")
 
 
-# -- where the owner's intent DOES bind -------------------------------------
+# -- crawl: advisory by default, enforceable on request ---------------------
 
-def test_crawl_honours_the_owners_policy():
-    """`crawl` follows a link graph on its own initiative — that IS crawling,
-    and it is the one place robots.txt binds."""
+def test_crawl_proceeds_past_a_disallow_by_default():
+    """htmldrill runs for a person who asked for this content, not as an
+    autonomous harvester, so the owner's crawler policy is reported rather than
+    enforced. The reader gets what they asked for."""
     from httpfixture import Origin
     with Origin() as o:
-        assert C._robots_ok(o.url("/private/page"), "htmldrill/0.1") is False
-        assert C._robots_ok(o.url("/ok"), "htmldrill/0.1") is True
+        assert C._robots_ok(o.url("/private/page"), "htmldrill/0.1") is True
+
+
+def test_respect_robots_enforces_the_owners_policy_when_asked():
+    from httpfixture import Origin
+    with Origin() as o:
+        assert C._robots_ok(o.url("/private/page"), "htmldrill/0.1", respect=True) is False
+        assert C._robots_ok(o.url("/ok"), "htmldrill/0.1", respect=True) is True
+
+
+def test_a_disallow_is_still_surfaced_even_though_it_is_not_enforced():
+    """Proceeding is a default, not a blindfold — the owner's stated intent is
+    still reported so the decision is informed."""
+    from httpfixture import Origin
+    with Origin() as o:
+        note = C._robots_note(o.url("/private/page"), "htmldrill/0.1")
+        assert "asks crawlers not to traverse" in note
+        assert "--respect-robots" in note
+        assert C._robots_note(o.url("/ok"), "htmldrill/0.1") == ""
 
 
 def test_crawl_proceeds_when_no_policy_was_stated():
-    assert C._robots_ok("http://127.0.0.1:1/x", "htmldrill/0.1") is True
+    assert C._robots_ok("http://127.0.0.1:1/x", "htmldrill/0.1", respect=True) is True
 
 
 def test_a_file_url_is_not_a_web_origin():
-    assert C._robots_ok("file:///tmp/a.html", "htmldrill/0.1") is True
+    assert C._robots_ok("file:///tmp/a.html", "htmldrill/0.1", respect=True) is True

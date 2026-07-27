@@ -172,3 +172,59 @@ def test_the_retrieved_underlying_resource_classifies_as_a_pdf_terminal():
         sc = Sidecar(F.local_id_for(pdf_url), work=work)
         assert sc.get_evidence("pagekind_row") == "po.pdf"
         assert "pdfdrill" in out
+
+
+# -- transient refusals are retried; determined answers are not -------------
+
+def test_a_transient_429_is_retried_into_the_actual_content():
+    """A 429 is "not right now", not an answer about the resource. Retrying is
+    what turns it into the page the reader asked for."""
+    with Origin() as o:
+        res = F.fetch(o.url("/flaky"))
+        assert res.status == 200
+        assert b"A Page" in res.body
+        assert len([p for p in o.seen_paths if p == "/flaky"]) == 3
+
+
+@pytest.mark.parametrize("path,status", [
+    ("/forbidden", 403), ("/unauthorized", 401), ("/missing", 404),
+])
+def test_a_determined_refusal_is_never_retried(path, status):
+    """401/403/404 are ANSWERS about the resource — the lattice turns them into
+    real terminals. Hammering them would be pointless and rude."""
+    with Origin() as o:
+        res = F.fetch(o.url(path))
+        assert res.status == status
+        assert len([p for p in o.seen_paths if p == path]) == 1
+
+
+def test_retry_honours_retry_after_rather_than_hammering():
+    import htmldrill.sources.fetch as FF
+    assert FF._retry_after("0", 5.0) == 0.0
+    assert FF._retry_after("2.5", 5.0) == 2.5
+    assert FF._retry_after(None, 5.0) == 5.0
+    assert FF._retry_after("Wed, 21 Oct 2026 07:28:00 GMT", 5.0) == 5.0
+
+
+def test_the_default_user_agent_stays_honest_because_that_is_what_works():
+    """MEASURED against a live WAF (ubiquitypress, 2026-07):
+
+        htmldrill UA + Accept-Language                   -> 200
+        Chrome UA   + Accept-Language                    -> 403
+        Chrome UA   + Accept-Language + Sec-Fetch-* +UIR -> 403
+
+    A Chrome token without Chrome's TLS/HTTP-2 fingerprint and client hints is a
+    MISMATCH, which WAFs score worse than an honestly-labelled tool. Switching to
+    a browser UA to "get past" blocks measurably lost us the page. Pinned here so
+    the next plausible-sounding attempt fails loudly instead of silently costing
+    a reader the content."""
+    assert not F.DEFAULT_UA.lower().startswith("mozilla"), (
+        "impersonating a browser measurably INCREASED 403s on the very page this "
+        "was meant to unblock — see the measurements in fetch.py")
+    assert "htmldrill" in F.DEFAULT_UA
+    with Origin() as o:
+        F.fetch(o.url("/ok"))
+        sent = o.seen_headers[-1]
+        for h in ("User-Agent", "Accept", "Accept-Language",
+                  "Sec-Fetch-Mode", "Upgrade-Insecure-Requests"):
+            assert h in sent, f"{h} not sent; headers were {sorted(sent)}"
